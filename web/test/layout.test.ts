@@ -149,3 +149,22 @@ test('unité () dessinée comme () et chaîne longue plafonnée avec …', () =>
   expect(l.w).toBeLessThanOrEqual(45 * CW);
   expect(texts(l)[0]).toMatch(/…"$/);
 });
+
+test('chaîne de 5 000 appels (trace arrêtée à la limite) : pas de débordement de pile', () => {
+  const calls: Call[] = Array.from({ length: 5000 }, (_, i) => ({ id: i + 1, parent: i, enter: i + 1, name: 'f', kind: 'lib', args: [] }));
+  const t = tr(calls);
+  const l = layoutForSteps(t, buildSteps(t, new Set(), true), () => ({ w: 40, h: 20 }));
+  expect(l.size).toBe(5000);
+  expect(l.get(5000)!.y).toBe(4999 * 60);
+  expect(new Set([...l.values()].map((r) => r.x)).size).toBe(1); // chaîne verticale alignée
+});
+
+test('parent plus large que ses enfants : petits-enfants décalés avec eux', () => {
+  // racine large, un enfant étroit avec deux petits-enfants étroits
+  const calls: Call[] = [1, 2, 3, 4].map((id) => ({ id, parent: id === 1 ? 0 : id === 2 ? 1 : 2, enter: id, exit: 10 - id, name: 'f', kind: 'user', args: [] }));
+  const l = layoutTree(tr(calls), new Set([1, 2, 3, 4]), (c) => ({ w: c.id === 1 ? 200 : 20, h: 20 }));
+  const [r2, r3, r4] = [l.get(2)!, l.get(3)!, l.get(4)!];
+  expect(r2.x + r2.w / 2).toBeCloseTo((r3.x + r4.x + r4.w) / 2, 5); // l'enfant reste centré sur ses enfants
+  expect(l.get(1)!.x).toBe(0);
+  expect(r3.x).toBeGreaterThanOrEqual(0);
+});

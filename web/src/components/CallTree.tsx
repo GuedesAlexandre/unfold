@@ -22,6 +22,8 @@ const STATE_TEXT: Record<Status, string> = {
   's-fail': 'a planté (origine de l\'erreur)', 's-failrel': 'a planté (à cause d\'un appel interne)',
 };
 
+const APPROX_TEXT = 'Appelant déduit à l\'exécution : ce n\'est peut-être pas lui qui fait cet appel dans le code.';
+
 interface NodeProps {
   call: Call; rect: Rect; status: Status; current: boolean; done: boolean; open: boolean;
   onToggleLib: (id: number) => void; onSelect?: (id: number) => void;
@@ -34,7 +36,7 @@ const NodeView = memo(function NodeView({ call, rect, status, current, done, ope
   return (
     <g className={`node ${status}${current ? ' current' : ''}`} transform={`translate(${rect.x} ${rect.y})`}
       onClick={() => onSelect?.(call.id)}>
-      <title>{`${n.title} : ${current && status === 's-wait' ? 'en cours' : STATE_TEXT[status]}`}</title>
+      <title>{`${n.title} : ${current && status === 's-wait' ? 'en cours' : STATE_TEXT[status]}${call.parentApprox ? `\n${APPROX_TEXT}` : ''}`}</title>
       {current && <rect className="ring" x={-4} y={-4} width={rect.w + 8} height={rect.h + 8} rx={9} />}
       <rect className="box" width={rect.w} height={rect.h} rx={6} />
       {status === 's-fail' && (
@@ -123,6 +125,7 @@ export function CallTree({ trace, steps, state, expanded, expandAll, onToggleLib
   };
   const onPointerMove = (e: React.PointerEvent) => {
     const d = drag.current; if (!d) return;
+    if (e.buttons === 0) { endDrag(); return; } // bouton relâché hors du svg
     if (!d.active) {
       if (Math.hypot(e.clientX - d.sx, e.clientY - d.sy) <= 4) return;
       d.active = true;
@@ -137,18 +140,34 @@ export function CallTree({ trace, steps, state, expanded, expandAll, onToggleLib
 
   const toggle = useCallback((id: number) => onToggleLib(id), [onToggleLib]);
 
+  // Seuls les nœuds proches de la zone visible sont dessinés (une trace à la limite peut en avoir des milliers).
+  const [view, setView] = useState({ w: 0, h: 0 });
+  useEffect(() => {
+    const el = svgRef.current; if (!el) return;
+    const ro = new ResizeObserver(() => setView({ w: el.clientWidth, h: el.clientHeight }));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const vx0 = (-xf.x - view.w) / xf.k, vy0 = (-xf.y - view.h) / xf.k;
+  const vx1 = (-xf.x + 2 * view.w) / xf.k, vy1 = (-xf.y + 2 * view.h) / xf.k;
+  const near = (r: Rect) => r.x + r.w >= vx0 && r.x <= vx1 && r.y + r.h >= vy0 && r.y <= vy1;
+
   const edges: JSX.Element[] = [];
   const nodes: JSX.Element[] = [];
   for (const [id, r] of layout) {
     const c = calls.get(id)!;
+    const shown = near(r);
     for (const k of kids.get(id) ?? []) {
       const kr = layout.get(k.id);
       if (!kr) continue;
+      const ex = Math.min(r.x, kr.x);
+      if (!shown && !near({ x: ex, y: r.y, w: Math.max(r.x + r.w, kr.x + kr.w) - ex, h: kr.y + kr.h - r.y })) continue;
       const x1 = r.x + r.w / 2, y1 = r.y + r.h, x2 = kr.x + kr.w / 2, y2 = kr.y;
-      edges.push(<path key={k.id} className="edge" d={`M${x1} ${y1} C${x1} ${(y1 + y2) / 2} ${x2} ${(y1 + y2) / 2} ${x2} ${y2}`}
-        opacity={state.visible.has(k.id) ? 1 : 0.35} />);
+      edges.push(<path key={k.id} className={`edge${k.parentApprox ? ' approx' : ''}`}
+        d={`M${x1} ${y1} C${x1} ${(y1 + y2) / 2} ${x2} ${(y1 + y2) / 2} ${x2} ${y2}`}
+        opacity={state.visible.has(k.id) ? 1 : 0.35}>{k.parentApprox && <title>{APPROX_TEXT}</title>}</path>);
     }
-    nodes.push(<NodeView key={id} call={c} rect={r} status={statusOf(id, c, state)} current={state.current === id}
+    if (shown) nodes.push(<NodeView key={id} call={c} rect={r} status={statusOf(id, c, state)} current={state.current === id}
       done={state.done.has(id)} open={expandAll || expanded.has(id)} onToggleLib={toggle} onSelect={onSelect} />);
   }
 
