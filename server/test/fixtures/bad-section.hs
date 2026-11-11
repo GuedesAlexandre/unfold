@@ -1,0 +1,2 @@
+main :: IO ()
+main = print (map (1 + 2 *) [3 :: Int])

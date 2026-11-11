@@ -1,5 +1,10 @@
 module Main where
 
+import Control.Applicative ((<|>))
+import Data.Bits ((.&.), (.|.))
+import Data.Function ((&))
+import Data.List ((\\))
+
 infixr 6 <+>
 (<+>) :: [Int] -> [Int] -> [Int]
 a <+> b = a ++ reverse b
@@ -33,6 +38,16 @@ main = do
   print (x : 1 : map (* 2) xs ++ [length ys `mod` 2 + 7] ++ ys)
   print (sum (map (subtract 1) ys) == 2 && 3 `elem` ys || null xs)
   print (local 2 3 4)
+  print (4 .|. 2 .&. 1 :: Int)
+  print ([1] <> [2] ++ [3] <> [4 :: Int])
+  putStrLn ("ab" <> "cd" ++ "ef")
+  print (Nothing <|> Just 1 <|> Just (2 :: Int))
+  print ((+ 1) <$> Nothing <|> Just (5 :: Int))
+  print ([1, 2, 3 :: Int] & map (+ 1) . filter odd & length)
+  print ([1 .. 5] \\ map (+ 1) [1, 2] <> [9 :: Int])
+  print ((- 1 +) 3 :: Int)
+  print ((1 * 2 +) 3 :: Int)
+  print ((+ 2 * 3) 1 :: Int)
   where
     local :: Int -> Int -> Int -> Int
     local p q r = p |- q |- r

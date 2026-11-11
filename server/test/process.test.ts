@@ -20,3 +20,16 @@ test('run : sortie tronquée', async () => {
   expect(r.truncated).toBe(true);
   expect(r.stdout.length).toBeLessThanOrEqual(1_000);
 });
+
+test('run : délai dépassé, petit-enfant qui garde les tubes', async () => {
+  const start = Date.now();
+  const r = await run('sh', ['-c', 'sleep 30 & sleep 30'], { ...base, timeoutMs: 500 });
+  expect(r.timedOut).toBe(true);
+  expect(r.code).toBeNull();
+  expect(Date.now() - start).toBeLessThan(2_000);
+});
+
+test('run : UTF-8 coupé entre deux morceaux', async () => {
+  const r = await run('sh', ['-c', "printf '\\303'; sleep 0.1; printf '\\251'"], base);
+  expect(r.stdout).toBe('é');
+});

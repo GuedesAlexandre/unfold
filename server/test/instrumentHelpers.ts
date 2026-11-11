@@ -2,7 +2,7 @@ import { copyFile, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { run } from '../src/process';
+import { run, type RunResult } from '../src/process';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const tracerDir = path.resolve(here, '../../tracer-haskell');
@@ -32,8 +32,11 @@ export async function runghcOriginal(fixture: string): Promise<string> {
   return must('runghc', [path.join(fixturesDir, fixture)], fixturesDir);
 }
 
-/** Run `unfold-instrument --roundtrip` on a fixture; returns the printed source and its `runghc` output. */
-export async function roundtrip(fixture: string): Promise<{ source: string; stdout: string }> {
+/**
+ * Run `unfold-instrument --roundtrip` on a fixture; returns the printed source
+ * and the result of `runghc` on it (which may fail).
+ */
+export async function roundtrip(fixture: string): Promise<{ source: string; result: RunResult }> {
   const dir = await mkdtemp(path.join(tmpdir(), 'unfold-rt-'));
   try {
     const input = path.join(dir, 'In.hs');
@@ -41,13 +44,15 @@ export async function roundtrip(fixture: string): Promise<{ source: string; stdo
     await copyFile(path.join(fixturesDir, fixture), input);
     await must(await instrumentBin(), ['--roundtrip', input, output], dir);
     const source = await readFile(output, 'utf8');
-    const stdout = await must('runghc', [output], dir);
-    return { source, stdout };
+    const result = await run('runghc', [output], { cwd: dir, ...LIMITS });
+    return { source, result };
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 }
 
 export async function roundtripAndRun(fixture: string): Promise<string> {
-  return (await roundtrip(fixture)).stdout;
+  const { result } = await roundtrip(fixture);
+  if (result.code !== 0) throw new Error(`runghc on the round-tripped ${fixture} → ${result.code}\n${result.stderr}`);
+  return result.stdout;
 }

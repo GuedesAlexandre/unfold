@@ -8,6 +8,6 @@ executable unfold-instrument
   main-is:          Main.hs
   hs-source-dirs:   app, src
   other-modules:    Unfold.Fixity
-  build-depends:    base, ghc, containers, process
+  build-depends:    base, ghc, ghc-boot, containers, process
   default-language: Haskell2010
   ghc-options:      -O1 -Wall
