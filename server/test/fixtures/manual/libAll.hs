@@ -20,4 +20,7 @@ main = runMain $ do
   print (U.drop root 3 xs == P.drop 3 xs, U.drop root 99 xs == P.drop 99 xs)
   print (U.elem root 9 xs == P.elem 9 xs, U.elem root 7 xs == P.elem 7 xs)
   print (U.replicate root 3 'x' == P.replicate 3 'x')
+  print (U.sum root [0.1, 0.2, 0.3 :: Double] == P.sum [0.1, 0.2, 0.3], U.product root [0.1, 0.2, 0.3 :: Double] == P.product [0.1, 0.2, 0.3])
+  print (U.sum root [1e16, 1, 1, -1e16 :: Double] == P.sum [1e16, 1, 1, -1e16])
+  print (U.reverse root [1 .. 200 :: Int] == P.reverse [1 .. 200])
   print (P.map fst U.libNames, P.map snd U.libNames)

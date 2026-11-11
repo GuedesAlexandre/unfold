@@ -63,7 +63,7 @@ test('foldr/map tracés, mêmes résultats que Prelude', async () => {
 
 test('fonctions de liste tracées : paresse préservée', async () => {
   const { stdout } = await compileAndRunManual('libLazy.hs', ['UnfoldPrelude.hs']);
-  expect(stdout.trim().split('\n')).toEqual(['[2,4,6]', 'True']);
+  expect(stdout.trim().split('\n')).toEqual(['[2,4,6]', 'True', "[(1,'a'),(2,'b')]", 'True']);
 });
 
 test('fonctions de liste tracées : identiques à Prelude', async () => {

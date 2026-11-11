@@ -54,15 +54,23 @@ length ctx xs = call ctx (-5) [val xs] $ \i -> case xs of
   [] -> eq i (-501) 0
   _ : ys -> eq i (-502) (1 + length (Ctx i 0) ys)
 
+-- sum/product/reverse : fold à gauche (comme le Prelude) via un assistant à accumulateur
+-- dont les appels récursifs restent tracés (même id de fonction, imbriqués sous l'appel).
 sum :: Num a => Ctx -> [a] -> a
-sum ctx xs = call ctx (-6) [val xs] $ \i -> case xs of
-  [] -> eq i (-601) 0
-  y : ys -> eq i (-602) (y + sum (Ctx i 0) ys)
+sum ctx xs = call ctx (-6) [val xs] $ \i -> sumAcc (Ctx i 0) 0 xs
+
+sumAcc :: Num a => Ctx -> a -> [a] -> a
+sumAcc ctx acc xs = call ctx (-6) [val acc, val xs] $ \i -> case xs of
+  [] -> eq i (-601) acc
+  y : ys -> let a = acc + y in a `seq` eq i (-602) (sumAcc (Ctx i 0) a ys)
 
 product :: Num a => Ctx -> [a] -> a
-product ctx xs = call ctx (-7) [val xs] $ \i -> case xs of
-  [] -> eq i (-701) 1
-  y : ys -> eq i (-702) (y * product (Ctx i 0) ys)
+product ctx xs = call ctx (-7) [val xs] $ \i -> productAcc (Ctx i 0) 1 xs
+
+productAcc :: Num a => Ctx -> a -> [a] -> a
+productAcc ctx acc xs = call ctx (-7) [val acc, val xs] $ \i -> case xs of
+  [] -> eq i (-701) acc
+  y : ys -> let a = acc * y in a `seq` eq i (-702) (productAcc (Ctx i 0) a ys)
 
 append :: Ctx -> [a] -> [a] -> [a]
 append ctx xs zs = call ctx (-8) [val xs, val zs] $ \i -> case xs of
@@ -70,9 +78,12 @@ append ctx xs zs = call ctx (-8) [val xs, val zs] $ \i -> case xs of
   y : ys -> eq i (-802) (y : append (Ctx i 0) ys zs)
 
 reverse :: Ctx -> [a] -> [a]
-reverse ctx xs = call ctx (-9) [val xs] $ \i -> case xs of
-  [] -> eq i (-901) []
-  y : ys -> eq i (-902) (append (Ctx i 0) (reverse (Ctx i 0) ys) [y])
+reverse ctx xs = call ctx (-9) [val xs] $ \i -> reverseAcc (Ctx i 0) [] xs
+
+reverseAcc :: Ctx -> [a] -> [a] -> [a]
+reverseAcc ctx acc xs = call ctx (-9) [val acc, val xs] $ \i -> case xs of
+  [] -> eq i (-901) acc
+  y : ys -> eq i (-902) (reverseAcc (Ctx i 0) (y : acc) ys)
 
 concat :: Ctx -> [[a]] -> [a]
 concat ctx xss = call ctx (-10) [val xss] $ \i -> case xss of
@@ -100,7 +111,7 @@ elem :: Eq a => Ctx -> a -> [a] -> Bool
 elem ctx x xs = call ctx (-14) [val x, val xs] $ \i -> case xs of
   [] -> eq i (-1401) False
   y : ys
-    | x == y -> eq i (-1402) True
+    | y == x -> eq i (-1402) True
     | otherwise -> eq i (-1403) (elem (Ctx i 0) x ys)
 
 replicate :: Ctx -> Int -> a -> [a]
