@@ -6,7 +6,12 @@
 -- chain of 'OpApp' / 'NegApp' and rebuilds it with the algorithm of the
 -- Haskell 2010 Report (§10.6), wrapping every rebuilt 'OpApp' (and 'NegApp')
 -- in 'HsPar' so that the printed program keeps its grouping whatever later
--- rewrites do to it.
+-- rewrites do to it. Rebuilt nodes carry source spans: the root of a chain
+-- keeps the chain's span, an inner node spans its operands.
+--
+-- 'resolveFixities' also returns the spans of the operators of every chain
+-- (or section operand) it regrouped: there, and only there, the grouping in
+-- the AST is explicit, so an infix use may be rewritten into a prefix call.
 --
 -- A chain is only regrouped when the fixity of every operator in it is known
 -- ('FixityEnv'). Otherwise — or when the chain is ill-formed (Report §10.6
@@ -27,17 +32,19 @@ module Unfold.Fixity
   , resolveFixities
   ) where
 
-import Data.Data (Data, cast, gmapQ, gmapT)
+import Control.Monad.Trans.State.Strict (State, modify', runState)
+import Data.Data (Data, cast, gmapM, gmapQ)
 import Data.Foldable (toList)
 import Data.List (nub, (\\))
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe)
+import Data.Set (Set)
+import qualified Data.Set as Set
 import GHC.Hs
 import GHC.Types.Fixity (Fixity (..), FixityDirection (..))
 import GHC.Types.Name.Occurrence (occNameString)
 import GHC.Types.Name.Reader (RdrName (..), rdrNameOcc)
-import GHC.Types.SrcLoc (GenLocated (..), unLoc)
+import GHC.Types.SrcLoc (GenLocated (..), RealSrcSpan, SrcSpan (..), combineSrcSpans, srcLocSpan, srcSpanStart, unLoc)
 
 data Assoc = AssocL | AssocR | AssocN
   deriving (Eq, Show)
@@ -125,9 +132,13 @@ moduleBinders m = concat
       ]
 
 -- | Re-associate every operator chain of the module (Report §10.6); each
--- resulting 'OpApp' is wrapped in 'HsPar'.
-resolveFixities :: FixityEnv -> HsModule GhcPs -> HsModule GhcPs
-resolveFixities env = gmapT (transform env)
+-- resulting 'OpApp' is wrapped in 'HsPar'. Also returns the spans of the
+-- operators of the regrouped chains.
+resolveFixities :: FixityEnv -> HsModule GhcPs -> (HsModule GhcPs, Set RealSrcSpan)
+resolveFixities env m = runState (gmapM (transform env) m) Set.empty
+
+-- | Spans of the operators whose grouping has been made explicit.
+type R = State (Set RealSrcSpan)
 
 --------------------------------------------------------------------------------
 -- Generic traversal
@@ -137,34 +148,41 @@ collect x = maybe [] pure (cast x) ++ concat (gmapQ (collect @b) x)
 
 -- | Top-down: an expression is handed to 'resolveExpr', which takes care of
 -- its own sub-expressions; anything else is traversed.
-transform :: forall a. Data a => FixityEnv -> a -> a
+transform :: forall a. Data a => FixityEnv -> a -> R a
 transform env x = case cast x :: Maybe (LHsExpr GhcPs) of
-  Just e -> fromMaybe x (cast (resolveExpr env e))
-  Nothing -> gmapT (transform env) x
+  Just e -> maybe (pure x) pure . cast =<< resolveExpr env e
+  Nothing -> gmapM (transform env) x
 
-resolveExpr :: FixityEnv -> LHsExpr GhcPs -> LHsExpr GhcPs
+resolveExpr :: FixityEnv -> LHsExpr GhcPs -> R (LHsExpr GhcPs)
 resolveExpr env e = case e of
-  L _ OpApp{} -> fromMaybe (keep env e) (resolveChain env e)
-  -- An already-parenthesised chain: the rebuilt chain brings its own parens.
+  L l OpApp{} -> maybe (keep env e) (build env (locA l)) (resolveChain env e)
+  -- An already-parenthesised chain: the rebuilt chain brings its own parens
+  -- (and takes the span of the user's, parentheses included).
   L l (HsPar p inner@(L _ OpApp{})) ->
-    fromMaybe (L l (HsPar p (keep env inner))) (resolveChain env inner)
-  L l (SectionL x arg op) | isChain arg ->
+    maybe (L l . HsPar p <$> keep env inner) (build env (locA l)) (resolveChain env inner)
+  L l (SectionL x arg op) | isChain arg -> do
     let toks = flatten arg ++ [TOp op, TExp op]
         legal t = case t of
           Bin i a (Leaf _) | i == opCount toks - 1 -> Just a
           _ -> Nothing
-     in L l $ case resolveSection env toks legal of
-          Just arg' -> SectionL x arg' (transform env op)
-          Nothing -> SectionL x (keep env arg) (transform env op)
-  L l (SectionR x op arg) | isChain arg ->
+    arg' <- maybe (keep env arg) (\(sub, ops) -> addOp op >> build env (getLocA arg) (sub, ops))
+      (resolveSection env toks legal)
+    L l . SectionL x arg' <$> transform env op
+  L l (SectionR x op arg) | isChain arg -> do
     let toks = [TExp op, TOp op] ++ flatten arg
         legal t = case t of
           Bin 0 (Leaf _) b -> Just b
           _ -> Nothing
-     in L l $ case resolveSection env toks legal of
-          Just arg' -> SectionR x (transform env op) arg'
-          Nothing -> SectionR x (transform env op) (keep env arg)
-  _ -> gmapT (transform env) e
+    arg' <- maybe (keep env arg) (\(sub, ops) -> addOp op >> build env (getLocA arg) (sub, ops))
+      (resolveSection env toks legal)
+    op' <- transform env op
+    pure (L l (SectionR x op' arg'))
+  _ -> gmapM (transform env) e
+
+addOp :: LHsExpr GhcPs -> R ()
+addOp op = case getLocA op of
+  RealSrcSpan s _ -> modify' (Set.insert s)
+  _ -> pure ()
 
 isChain :: LHsExpr GhcPs -> Bool
 isChain (L _ OpApp{}) = True
@@ -173,29 +191,30 @@ isChain _ = False
 
 -- | Leave a chain as parsed (parentheses included), only resolving inside
 -- its operands.
-keep :: FixityEnv -> LHsExpr GhcPs -> LHsExpr GhcPs
-keep env (L l (OpApp x a op b)) = L l (OpApp x (keep env a) (transform env op) (keep env b))
-keep env (L l (NegApp x a s)) = L l (NegApp x (keep env a) s)
+keep :: FixityEnv -> LHsExpr GhcPs -> R (LHsExpr GhcPs)
+keep env (L l (OpApp x a op b)) = L l <$> (OpApp x <$> keep env a <*> transform env op <*> keep env b)
+keep env (L l (NegApp x a s)) = L l <$> (NegApp x <$> keep env a <*> pure s)
 keep env e = resolveExpr env e
 
 --------------------------------------------------------------------------------
 -- Report §10.6
 
+-- | 'TNeg' / 'Neg' carry the position of the minus sign.
 data Tok
   = TExp (LHsExpr GhcPs)
-  | TNeg (LHsExpr GhcPs -> HsExpr GhcPs)
+  | TNeg SrcSpan (LHsExpr GhcPs -> HsExpr GhcPs)
   | TOp (LHsExpr GhcPs)
 
 -- | Resolved chain; 'Bin' carries the index of its operator in the chain.
 data Tree
   = Leaf (LHsExpr GhcPs)
-  | Neg (LHsExpr GhcPs -> HsExpr GhcPs) Tree
+  | Neg SrcSpan (LHsExpr GhcPs -> HsExpr GhcPs) Tree
   | Bin Int Tree Tree
 
 -- | Flatten a (left-nested) chain into tokens; operands are left untouched.
 flatten :: LHsExpr GhcPs -> [Tok]
 flatten (L _ (OpApp _ l op r)) = flatten l ++ [TOp op] ++ flatten r
-flatten (L _ (NegApp x e syn)) = TNeg (\e' -> NegApp x e' syn) : flatten e
+flatten (L l (NegApp x e syn)) = TNeg (srcLocSpan (srcSpanStart (locA l))) (\e' -> NegApp x e' syn) : flatten e
 flatten e = [TExp e]
 
 opCount :: [Tok] -> Int
@@ -218,32 +237,46 @@ resolveToks env toks = do
         go _ [] = []
         go i (TOp _ : ts) = NOp i (snd (ops !! i)) : go (i + 1) ts
         go i (TExp e : ts) = NExp e : go i ts
-        go i (TNeg mk : ts) = NNeg mk : go i ts
+        go i (TNeg s mk : ts) = NNeg s mk : go i ts
 
-resolveChain :: FixityEnv -> LHsExpr GhcPs -> Maybe (LHsExpr GhcPs)
-resolveChain env e = do
-  (t, ops) <- resolveToks env (flatten e)
-  Just (build env ops t)
+resolveChain :: FixityEnv -> LHsExpr GhcPs -> Maybe (Tree, [(LHsExpr GhcPs, Fix)])
+resolveChain env e = resolveToks env (flatten e)
 
 -- | Resolve a section's chain (operand + section operator + placeholder);
 -- @legal@ picks the operand subtree out of a §3.5-legal result.
-resolveSection :: FixityEnv -> [Tok] -> (Tree -> Maybe Tree) -> Maybe (LHsExpr GhcPs)
+resolveSection :: FixityEnv -> [Tok] -> (Tree -> Maybe Tree) -> Maybe (Tree, [(LHsExpr GhcPs, Fix)])
 resolveSection env toks legal = do
   (t, ops) <- resolveToks env toks
   sub <- legal t
-  Just (build env ops sub)
+  Just (sub, ops)
 
-build :: FixityEnv -> [(LHsExpr GhcPs, Fix)] -> Tree -> LHsExpr GhcPs
-build env ops = go
+-- | Rebuild a resolved tree; its root gets the span @root@, inner nodes the
+-- span of their operands. The operators used are recorded as resolved.
+build :: FixityEnv -> SrcSpan -> (Tree, [(LHsExpr GhcPs, Fix)]) -> R (LHsExpr GhcPs)
+build env root (tree, ops) = do
+  e <- go tree
+  pure $ case (tree, e) of
+    (Leaf _, _) -> e
+    (_, L _ (HsPar p inner)) -> L (noAnnSrcSpan root) (HsPar p inner)
+    _ -> e
   where
     go (Leaf e) = resolveExpr env e
-    go (Neg mk t) = par (noLocA (mk (go t)))
-    go (Bin i a b) = par (noLocA (OpApp noAnn (go a) (transform env (fst (ops !! i))) (go b)))
+    go (Neg s mk t) = do
+      t' <- go t
+      pure (par (combineSrcSpans s (getLocA t')) (mk t'))
+    go (Bin i a b) = do
+      a' <- go a
+      let op = fst (ops !! i)
+      addOp op
+      op' <- transform env op
+      b' <- go b
+      pure (par (combineSrcSpans (getLocA a') (getLocA b')) (OpApp noAnn a' op' b'))
 
-par :: LHsExpr GhcPs -> LHsExpr GhcPs
-par e = noLocA (HsPar noAnn e)
+-- | A rebuilt node, parenthesised; both nodes get the span @s@.
+par :: SrcSpan -> HsExpr GhcPs -> LHsExpr GhcPs
+par s e = L (noAnnSrcSpan s) (HsPar noAnn (L (noAnnSrcSpan s) e))
 
-data NTok = NExp (LHsExpr GhcPs) | NNeg (LHsExpr GhcPs -> HsExpr GhcPs) | NOp Int Fix
+data NTok = NExp (LHsExpr GhcPs) | NNeg SrcSpan (LHsExpr GhcPs -> HsExpr GhcPs) | NOp Int Fix
 
 type Op = (Int, Fix) -- (index, fixity); index -1 for the virtual operators
 
@@ -252,10 +285,10 @@ parseNeg op1 = parseNeg' (-1, op1)
 
 parseNeg' :: Op -> [NTok] -> Maybe (Tree, [NTok])
 parseNeg' op1 (NExp e1 : rest) = parse1 op1 (Leaf e1) rest
-parseNeg' op1@(_, (prec1, _)) (NNeg mk : rest)
+parseNeg' op1@(_, (prec1, _)) (NNeg s mk : rest)
   | prec1 < 6 = do
       (r, rest') <- parseNeg' (-1, (6, AssocL)) rest
-      parse1 op1 (Neg mk r) rest'
+      parse1 op1 (Neg s mk r) rest'
 parseNeg' _ _ = Nothing
 
 parse1 :: Op -> Tree -> [NTok] -> Maybe (Tree, [NTok])
