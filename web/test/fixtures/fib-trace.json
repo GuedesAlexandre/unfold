@@ -1,0 +1,405 @@
+{
+ "version": 1,
+ "language": "haskell",
+ "status": "ok",
+ "stdout": "3\n",
+ "diagnostics": [],
+ "calls": [
+  {
+   "id": 1,
+   "parent": 0,
+   "enter": 1,
+   "exit": 18,
+   "name": "fib",
+   "kind": "user",
+   "defSpan": {
+    "line": 2,
+    "col": 1,
+    "endLine": 4,
+    "endCol": 30
+   },
+   "appSpan": {
+    "line": 6,
+    "col": 15,
+    "endLine": 6,
+    "endCol": 20
+   },
+   "eqSpan": {
+    "line": 4,
+    "col": 1,
+    "endLine": 4,
+    "endCol": 30
+   },
+   "rhsSpan": {
+    "line": 4,
+    "col": 9,
+    "endLine": 4,
+    "endCol": 30
+   },
+   "rhsText": "fib (n-1) + fib (n-2)",
+   "eqText": "fib n = fib (n-1) + fib (n-2)",
+   "args": [
+    {
+     "t": "num",
+     "v": "4"
+    }
+   ],
+   "result": {
+    "t": "num",
+    "v": "3"
+   }
+  },
+  {
+   "id": 2,
+   "parent": 1,
+   "enter": 2,
+   "exit": 11,
+   "name": "fib",
+   "kind": "user",
+   "defSpan": {
+    "line": 2,
+    "col": 1,
+    "endLine": 4,
+    "endCol": 30
+   },
+   "appSpan": {
+    "line": 4,
+    "col": 9,
+    "endLine": 4,
+    "endCol": 18
+   },
+   "eqSpan": {
+    "line": 4,
+    "col": 1,
+    "endLine": 4,
+    "endCol": 30
+   },
+   "rhsSpan": {
+    "line": 4,
+    "col": 9,
+    "endLine": 4,
+    "endCol": 30
+   },
+   "rhsText": "fib (n-1) + fib (n-2)",
+   "eqText": "fib n = fib (n-1) + fib (n-2)",
+   "args": [
+    {
+     "t": "num",
+     "v": "3"
+    }
+   ],
+   "result": {
+    "t": "num",
+    "v": "2"
+   }
+  },
+  {
+   "id": 3,
+   "parent": 2,
+   "enter": 3,
+   "exit": 8,
+   "name": "fib",
+   "kind": "user",
+   "defSpan": {
+    "line": 2,
+    "col": 1,
+    "endLine": 4,
+    "endCol": 30
+   },
+   "appSpan": {
+    "line": 4,
+    "col": 9,
+    "endLine": 4,
+    "endCol": 18
+   },
+   "eqSpan": {
+    "line": 4,
+    "col": 1,
+    "endLine": 4,
+    "endCol": 30
+   },
+   "rhsSpan": {
+    "line": 4,
+    "col": 9,
+    "endLine": 4,
+    "endCol": 30
+   },
+   "rhsText": "fib (n-1) + fib (n-2)",
+   "eqText": "fib n = fib (n-1) + fib (n-2)",
+   "args": [
+    {
+     "t": "num",
+     "v": "2"
+    }
+   ],
+   "result": {
+    "t": "num",
+    "v": "1"
+   }
+  },
+  {
+   "id": 4,
+   "parent": 3,
+   "enter": 4,
+   "exit": 5,
+   "name": "fib",
+   "kind": "user",
+   "defSpan": {
+    "line": 2,
+    "col": 1,
+    "endLine": 4,
+    "endCol": 30
+   },
+   "appSpan": {
+    "line": 4,
+    "col": 9,
+    "endLine": 4,
+    "endCol": 18
+   },
+   "eqSpan": {
+    "line": 3,
+    "col": 1,
+    "endLine": 3,
+    "endCol": 10
+   },
+   "rhsSpan": {
+    "line": 3,
+    "col": 9,
+    "endLine": 3,
+    "endCol": 10
+   },
+   "rhsText": "1",
+   "eqText": "fib 1 = 1",
+   "args": [
+    {
+     "t": "num",
+     "v": "1"
+    }
+   ],
+   "result": {
+    "t": "num",
+    "v": "1"
+   }
+  },
+  {
+   "id": 5,
+   "parent": 3,
+   "enter": 6,
+   "exit": 7,
+   "name": "fib",
+   "kind": "user",
+   "defSpan": {
+    "line": 2,
+    "col": 1,
+    "endLine": 4,
+    "endCol": 30
+   },
+   "appSpan": {
+    "line": 4,
+    "col": 21,
+    "endLine": 4,
+    "endCol": 30
+   },
+   "eqSpan": {
+    "line": 2,
+    "col": 1,
+    "endLine": 2,
+    "endCol": 10
+   },
+   "rhsSpan": {
+    "line": 2,
+    "col": 9,
+    "endLine": 2,
+    "endCol": 10
+   },
+   "rhsText": "0",
+   "eqText": "fib 0 = 0",
+   "args": [
+    {
+     "t": "num",
+     "v": "0"
+    }
+   ],
+   "result": {
+    "t": "num",
+    "v": "0"
+   }
+  },
+  {
+   "id": 6,
+   "parent": 2,
+   "enter": 9,
+   "exit": 10,
+   "name": "fib",
+   "kind": "user",
+   "defSpan": {
+    "line": 2,
+    "col": 1,
+    "endLine": 4,
+    "endCol": 30
+   },
+   "appSpan": {
+    "line": 4,
+    "col": 21,
+    "endLine": 4,
+    "endCol": 30
+   },
+   "eqSpan": {
+    "line": 3,
+    "col": 1,
+    "endLine": 3,
+    "endCol": 10
+   },
+   "rhsSpan": {
+    "line": 3,
+    "col": 9,
+    "endLine": 3,
+    "endCol": 10
+   },
+   "rhsText": "1",
+   "eqText": "fib 1 = 1",
+   "args": [
+    {
+     "t": "num",
+     "v": "1"
+    }
+   ],
+   "result": {
+    "t": "num",
+    "v": "1"
+   }
+  },
+  {
+   "id": 7,
+   "parent": 1,
+   "enter": 12,
+   "exit": 17,
+   "name": "fib",
+   "kind": "user",
+   "defSpan": {
+    "line": 2,
+    "col": 1,
+    "endLine": 4,
+    "endCol": 30
+   },
+   "appSpan": {
+    "line": 4,
+    "col": 21,
+    "endLine": 4,
+    "endCol": 30
+   },
+   "eqSpan": {
+    "line": 4,
+    "col": 1,
+    "endLine": 4,
+    "endCol": 30
+   },
+   "rhsSpan": {
+    "line": 4,
+    "col": 9,
+    "endLine": 4,
+    "endCol": 30
+   },
+   "rhsText": "fib (n-1) + fib (n-2)",
+   "eqText": "fib n = fib (n-1) + fib (n-2)",
+   "args": [
+    {
+     "t": "num",
+     "v": "2"
+    }
+   ],
+   "result": {
+    "t": "num",
+    "v": "1"
+   }
+  },
+  {
+   "id": 8,
+   "parent": 7,
+   "enter": 13,
+   "exit": 14,
+   "name": "fib",
+   "kind": "user",
+   "defSpan": {
+    "line": 2,
+    "col": 1,
+    "endLine": 4,
+    "endCol": 30
+   },
+   "appSpan": {
+    "line": 4,
+    "col": 9,
+    "endLine": 4,
+    "endCol": 18
+   },
+   "eqSpan": {
+    "line": 3,
+    "col": 1,
+    "endLine": 3,
+    "endCol": 10
+   },
+   "rhsSpan": {
+    "line": 3,
+    "col": 9,
+    "endLine": 3,
+    "endCol": 10
+   },
+   "rhsText": "1",
+   "eqText": "fib 1 = 1",
+   "args": [
+    {
+     "t": "num",
+     "v": "1"
+    }
+   ],
+   "result": {
+    "t": "num",
+    "v": "1"
+   }
+  },
+  {
+   "id": 9,
+   "parent": 7,
+   "enter": 15,
+   "exit": 16,
+   "name": "fib",
+   "kind": "user",
+   "defSpan": {
+    "line": 2,
+    "col": 1,
+    "endLine": 4,
+    "endCol": 30
+   },
+   "appSpan": {
+    "line": 4,
+    "col": 21,
+    "endLine": 4,
+    "endCol": 30
+   },
+   "eqSpan": {
+    "line": 2,
+    "col": 1,
+    "endLine": 2,
+    "endCol": 10
+   },
+   "rhsSpan": {
+    "line": 2,
+    "col": 9,
+    "endLine": 2,
+    "endCol": 10
+   },
+   "rhsText": "0",
+   "eqText": "fib 0 = 0",
+   "args": [
+    {
+     "t": "num",
+     "v": "0"
+    }
+   ],
+   "result": {
+    "t": "num",
+    "v": "0"
+   }
+  }
+ ]
+}
