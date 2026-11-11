@@ -49,3 +49,27 @@ test('callDyn : parent = appel en cours, 0 hors appel', async () => {
   const byFid = (fid: number) => raw.calls.filter(c => c.fid === fid).map(c => c.parent);
   expect(byFid(2)).toEqual([1, 0]);
 });
+
+test('foldr/map tracés, mêmes résultats que Prelude', async () => {
+  const { stdout, raw } = await compileAndRunManual('lib.hs', ['UnfoldPrelude.hs']);
+  expect(stdout.trim()).toBe('12');
+  const top = raw.calls.filter(c => c.parent === 0).map(c => c.fid).sort((a, b) => a - b);
+  expect(top).toEqual([-3, -1]);
+  const foldr = raw.calls.find(c => c.fid === -3 && c.parent === 0)!;
+  expect(raw.calls.some(c => c.fid === -3 && c.parent === foldr.id)).toBe(true);
+  expect(raw.calls.every(c => c.fid > 0 || c.fid >= -15)).toBe(true);
+  expect(raw.calls.every(c => c.eq === null || c.eq <= -100 || c.eq > 0)).toBe(true);
+});
+
+test('fonctions de liste tracées : paresse préservée', async () => {
+  const { stdout } = await compileAndRunManual('libLazy.hs', ['UnfoldPrelude.hs']);
+  expect(stdout.trim().split('\n')).toEqual(['[2,4,6]', 'True']);
+});
+
+test('fonctions de liste tracées : identiques à Prelude', async () => {
+  const { stdout } = await compileAndRunManual('libAll.hs', ['UnfoldPrelude.hs']);
+  const lines = stdout.trim().split('\n');
+  expect(lines.slice(0, -1).join(' ')).not.toContain('False');
+  expect(lines[lines.length - 1]).toBe(
+    '(["map","filter","foldr","foldl","length","sum","product","++","reverse","concat","zip","take","drop","elem","replicate"],[-1,-2,-3,-4,-5,-6,-7,-8,-9,-10,-11,-12,-13,-14,-15])');
+});
