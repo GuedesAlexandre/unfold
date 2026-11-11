@@ -2,7 +2,7 @@ import type { Call, Value } from '@unfold/shared/trace';
 
 const isTuple = (name: string) => /^\(,+\)$/.test(name);
 
-function needsParens(v: Value): boolean {
+export function needsParens(v: Value): boolean {
   if (v.t === 'num') return v.v.startsWith('-');
   return v.t === 'con' && v.args.length > 0 && !isTuple(v.name);
 }

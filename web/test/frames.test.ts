@@ -91,6 +91,59 @@ describe('frameText', () => {
   });
 });
 
+describe('frameText : correctifs de revue', () => {
+  const mkParent = (rhsText: string, endCol: number): Call => ({
+    ...call(1), rhsText, rhsSpan: { line: 4, col: 1, endLine: 4, endCol }, exit: undefined, result: undefined,
+  });
+  const mkKid = (id: number, col: number, endCol: number, result?: Value, extra: Partial<Call> = {}): Call => ({
+    id, parent: 1, enter: id, ...(result ? { exit: id + 100, result } : {}), name: 'g', kind: 'user', args: [num(String(id))],
+    appSpan: { line: 4, col, endLine: 4, endCol }, ...extra,
+  });
+  const run = (p: Call, kids: Call[], k: number) => {
+    const t = tr([p, ...kids]);
+    const steps = buildSteps(t, new Set(), false);
+    return frameText(t, p, stateAt(t, steps, k));
+  };
+  test('résultat négatif en position d\'opérateur : parenthésé', () => {
+    expect(run(mkParent('2 * g 2', 8), [mkKid(2, 5, 8, num('-1'))], 3)).toBe('fib 4 = 2 * (-1)');
+  });
+  test('constructeur avec arguments en position d\'opérateur : parenthésé', () => {
+    const v: Value = { t: 'con', name: 'Noeud', args: [num('1'), num('2')] };
+    expect(run(mkParent('g 2 ++ x', 9), [mkKid(2, 1, 4, v)], 3)).toBe('fib 4 = (Noeud 1 2) ++ x');
+  });
+  test('résultat déjà délimité : pas de double parenthèse', () => {
+    expect(run(mkParent('h (g 2)', 8), [mkKid(2, 4, 7, num('-1'))], 3)).toBe('fib 4 = h (-1)');
+    expect(run(mkParent('[g 2, 3]', 9), [mkKid(2, 2, 5, num('-1'))], 3)).toBe('fib 4 = [-1, 3]');
+  });
+  test('même appSpan : pendant gagne', () => {
+    const p = mkParent('s [g x]', 8);
+    const a = mkKid(2, 4, 7, num('1')), b = mkKid(3, 4, 7);
+    expect(run(p, [a, b], 4)).toBe('fib 4 = s [[g 3 ?]]');
+  });
+  test('même appSpan : résultats identiques ou différents', () => {
+    const p = mkParent('s [g x]', 8);
+    expect(run(p, [mkKid(2, 4, 7, num('1')), mkKid(3, 4, 7, num('1'))], 5)).toBe('fib 4 = s [1]');
+    expect(run(p, [mkKid(2, 4, 7, num('1')), mkKid(3, 4, 7, num('2'))], 5)).toBe('fib 4 = s [g x]');
+  });
+  test('rhsText plus court que rhsSpan : pas d\'exception', () => {
+    const p: Call = { ...mkParent('a', 8), rhsSpan: { line: 4, col: 1, endLine: 6, endCol: 3 } };
+    const k = mkKid(2, 1, 2, num('1'), { appSpan: { line: 5, col: 1, endLine: 5, endCol: 2 } });
+    expect(run(p, [k], 3)).toBe('fib 4 = a');
+  });
+  test('terminé sans résultat : texte source ; cut : …', () => {
+    const p = mkParent('1 + g 2', 8);
+    const k = mkKid(2, 5, 8, num('1'));
+    delete (k as { result?: Value }).result;
+    expect(run(p, [k], 3)).toBe('fib 4 = 1 + g 2');
+    expect(run(p, [mkKid(2, 5, 8, { t: 'cut' })], 3)).toBe('fib 4 = 1 + …');
+  });
+  test('cas de base seulement si l\'appel est revenu', () => {
+    const c: Call = { ...call(4), parent: 1, exit: undefined, result: undefined };
+    const t = tr([call(1), c]);
+    expect(stepCaption(t, [{ kind: 'enter', callId: 4 }], 0)).toBe('Étape 1 : fib 4 appelle fib 1');
+  });
+});
+
 describe('stepCaption', () => {
   const steps = buildSteps(fib, new Set(), false);
   test('entrée avec cas de base', () => {
