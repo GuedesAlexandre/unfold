@@ -12,6 +12,7 @@ const runtimeDir = path.resolve(here, '../../tracer-haskell/runtime');
 
 export interface RawCall {
   id: number; parent: number; site: number; fid: number; eq: number | null;
+  dyn: boolean; // called through callDyn: parent taken from the dynamic stack
   enter: number; exit: number | null; args: Value[]; result: Value | null;
   error: { message: string; origin: boolean } | null;
 }

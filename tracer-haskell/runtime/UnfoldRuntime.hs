@@ -26,6 +26,7 @@ root = Ctx 0 0
 
 data Rec = Rec
   { rParent :: !Int, rSite :: !Int, rFid :: !Int, rEq :: !(Maybe Int)
+  , rDyn :: !Bool -- ^ parent pris sur la pile dynamique (callDyn)
   , rEnter :: !Int, rExit :: !(Maybe Int)
   , rArgs :: [Box], rResult :: Maybe Box
   , rError :: !(Maybe (String, Bool)) }
@@ -70,24 +71,24 @@ adjustRec i f = modifyIORef' callsRef (IM.adjust f i)
 
 {-# NOINLINE call #-}
 call :: Ctx -> Int -> [Box] -> (Int -> r) -> r
-call (Ctx parent site) fid args body = unsafePerformIO (enter parent site fid args body)
+call (Ctx parent site) fid args body = unsafePerformIO (enter False parent site fid args body)
 
 -- | Parent = appel en cours sur la pile dynamique (méthodes d'instance).
 {-# NOINLINE callDyn #-}
 callDyn :: Int -> [Box] -> (Int -> r) -> r
 callDyn fid args body = unsafePerformIO $ do
   st <- readIORef stackRef
-  enter (case st of { (p : _) -> p; [] -> 0 }) 0 fid args body
+  enter True (case st of { (p : _) -> p; [] -> 0 }) 0 fid args body
 
-enter :: Int -> Int -> Int -> [Box] -> (Int -> r) -> IO r
-enter parent site fid args body = do
+enter :: Bool -> Int -> Int -> Int -> [Box] -> (Int -> r) -> IO r
+enter dyn parent site fid args body = do
   n <- readIORef stepsRef
   mx <- readIORef maxStepsRef
   when (n >= mx) (throwIO StepLimit)
   let i = n + 1
   writeIORef stepsRef i
   e <- nextSeq
-  modifyIORef' callsRef (IM.insert i (Rec parent site fid Nothing e Nothing args Nothing Nothing))
+  modifyIORef' callsRef (IM.insert i (Rec parent site fid Nothing dyn e Nothing args Nothing Nothing))
   modifyIORef' stackRef (i :)
   r <- evaluate (body i) `catch` \(ex :: SomeException) -> do
     modifyIORef' stackRef (drop 1)
@@ -222,7 +223,8 @@ jcall (i, r) = do
         Just (m, o) -> "{\"message\":" ++ jstr m ++ ",\"origin\":" ++ (if o then "true" else "false") ++ "}"
       int = maybe "null" show
   pure $ "{\"id\":" ++ show i ++ ",\"parent\":" ++ show (rParent r) ++ ",\"site\":" ++ show (rSite r)
-    ++ ",\"fid\":" ++ show (rFid r) ++ ",\"eq\":" ++ int (rEq r) ++ ",\"enter\":" ++ show (rEnter r)
+    ++ ",\"fid\":" ++ show (rFid r) ++ ",\"eq\":" ++ int (rEq r)
+    ++ ",\"dyn\":" ++ (if rDyn r then "true" else "false") ++ ",\"enter\":" ++ show (rEnter r)
     ++ ",\"exit\":" ++ int (rExit r) ++ ",\"args\":" ++ jlist as ++ ",\"result\":" ++ res
     ++ ",\"error\":" ++ err ++ "}"
 

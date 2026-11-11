@@ -14,7 +14,9 @@ import Data.Char (ord)
 import Data.List (intercalate)
 import Numeric (showHex)
 
--- | 1-based; @endCol@ is exclusive (GHC's convention).
+-- | Lines and columns 1-based, @endCol@ exclusive. Columns count UTF-16 code
+-- units of the original line (as the web editor does): a tab is 1, a
+-- character outside the BMP is 2 (GHC's own columns differ on both).
 data Span = Span {spLine, spCol, spEndLine, spEndCol :: !Int}
 
 data FunMeta = FunMeta

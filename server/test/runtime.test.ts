@@ -6,6 +6,7 @@ test('fib 4 : 9 appels, parents lexicaux, résultats', async () => {
   expect(stdout.trim()).toBe('3');
   expect(raw.calls).toHaveLength(9);
   const c1 = raw.calls.find(c => c.id === 1)!;
+  expect(raw.calls.every(c => c.dyn === false)).toBe(true);
   expect(c1.parent).toBe(0); expect(c1.args).toEqual([{ t: 'num', v: '4' }]); expect(c1.result).toEqual({ t: 'num', v: '3' });
   expect(c1.eq).toBe(3);
   expect(raw.calls.filter(c => c.parent === 1).map(c => c.args[0])).toEqual([{ t: 'num', v: '3' }, { t: 'num', v: '2' }]);
@@ -48,6 +49,7 @@ test('callDyn : parent = appel en cours, 0 hors appel', async () => {
   expect(stdout.trim()).toBe('8');
   const byFid = (fid: number) => raw.calls.filter(c => c.fid === fid).map(c => c.parent);
   expect(byFid(2)).toEqual([1, 0]);
+  expect(raw.calls.map(c => [c.fid, c.dyn])).toEqual([[1, false], [2, true], [2, true]]);
 });
 
 test('foldr/map tracés, mêmes résultats que Prelude', async () => {

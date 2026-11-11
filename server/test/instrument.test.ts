@@ -3,7 +3,8 @@ import { describe, expect, test } from 'vitest';
 import { instrument, instrumentAndRun, runghcOriginal, type Meta } from './instrumentHelpers';
 import type { RawCall, RawTrace } from './runtimeHelpers';
 
-const FIXTURES = ['fib.hs', 'qsort.hs', 'localgo.hs', 'nosig.hs', 'shadowing.hs', 'tree.hs', 'lambda.hs', 'features.hs', 'misc.hs'];
+const FIXTURES = ['fib.hs', 'qsort.hs', 'localgo.hs', 'nosig.hs', 'shadowing.hs', 'tree.hs', 'lambda.hs', 'features.hs', 'misc.hs',
+  'utf8.hs', 'wildcards.hs', 'columns.hs', 'puns.hs'];
 
 const nameOf = (meta: Meta, c: RawCall) => meta.functions[c.fid].name;
 const callsNamed = (raw: RawTrace, meta: Meta, name: string) => raw.calls.filter(c => nameOf(meta, c) === name);
@@ -23,8 +24,11 @@ function chain(raw: RawTrace, meta: Meta, c: RawCall): string[] {
 describe('sécurité : même sortie que runghc sur l’original', () => {
   for (const f of FIXTURES) {
     test(f, async () => {
-      const { stdout } = await instrumentAndRun(f);
+      const { stdout, meta, source } = await instrumentAndRun(f);
       expect(stdout).toBe(await runghcOriginal(f));
+      // every site of META is in the generated code, and only those
+      const inCode = [...source.matchAll(/UnfoldRuntime\.Ctx\s+\S+\s+(\d+)/g)].map(m => m[1]).sort();
+      expect(inCode).toEqual(Object.keys(meta.sites).sort());
     });
   }
 });
@@ -181,6 +185,26 @@ test('noms générés sans conflit, portées locales, vues, enregistrements', as
   expect(chain(raw, meta, app).slice(0, 4)).toEqual(['appliquerN', 'appliquerN', 'appliquerN', 'appliquerN']);
   expect(callsNamed(raw, meta, 'somme')).toHaveLength(2);
   expect(callsNamed(raw, meta, 'signe')).toHaveLength(3);
+});
+
+test('locale non UTF-8 : sources, programme et META en UTF-8', async () => {
+  const { stdout, meta } = await instrumentAndRun('utf8.hs', { LANG: 'C', LC_ALL: 'C', LC_CTYPE: 'C' });
+  expect(stdout).toBe(await runghcOriginal('utf8.hs'));
+  expect(Object.values(meta.functions).map(f => f.name)).toContain('λ');
+  expect(Object.values(meta.equations).map(e => e.rhsText)).toContain('"Bonjour, " ++ nom ++ " ! Ça va ? é"');
+});
+
+test('appel par l’alias (sous un motif {..}) : dyn = true', async () => {
+  const { raw, meta } = await instrumentAndRun('wildcards.hs');
+  expect(callsNamed(raw, meta, 'render').map(c => c.dyn)).toEqual([false]);
+  expect(callsNamed(raw, meta, 'double').map(c => c.dyn)).toEqual([true]);
+});
+
+test('colonnes en unités UTF-16 : tabulation et caractère hors BMP', async () => {
+  const { raw, meta } = await instrumentAndRun('columns.hs');
+  const [d] = callsNamed(raw, meta, 'double');
+  // line 6: `\tputStrLn "😀" >> print (double 1)` — tab = 1 unit, emoji = 2 units
+  expect(meta.sites[d.site].appSpan).toEqual({ line: 6, col: 26, endLine: 6, endCol: 34 });
 });
 
 test('programme sans main : sortie 3 et message', async () => {

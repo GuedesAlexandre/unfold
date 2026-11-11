@@ -73,7 +73,7 @@ export interface Meta {
 }
 
 /** Run `unfold-instrument IN OUT META` on a fixture (or on given source text) in a fresh directory. */
-export async function instrument(fixture: string, source?: string): Promise<{
+export async function instrument(fixture: string, source?: string, env?: Record<string, string>): Promise<{
   dir: string; result: RunResult; out: string; metaPath: string;
 }> {
   const dir = await mkdtemp(path.join(tmpdir(), 'unfold-in-'));
@@ -82,7 +82,7 @@ export async function instrument(fixture: string, source?: string): Promise<{
   else await writeFile(input, source);
   const out = path.join(dir, 'Main.hs');
   const metaPath = path.join(dir, 'meta.json');
-  const result = await run(await instrumentBin(), [input, out, metaPath], { cwd: dir, ...LIMITS });
+  const result = await run(await instrumentBin(), [input, out, metaPath], { cwd: dir, env, ...LIMITS });
   return { dir, result, out, metaPath };
 }
 
@@ -90,10 +90,10 @@ export async function instrument(fixture: string, source?: string): Promise<{
  * Instrument a fixture, compile it with the runtime (same flags as the server),
  * run it with `UNFOLD_TRACE`; returns stdout, the raw trace, META and the generated source.
  */
-export async function instrumentAndRun(fixture: string): Promise<{
+export async function instrumentAndRun(fixture: string, instrumentEnv?: Record<string, string>): Promise<{
   stdout: string; raw: RawTrace; meta: Meta; source: string;
 }> {
-  const { dir, result, out, metaPath } = await instrument(fixture);
+  const { dir, result, out, metaPath } = await instrument(fixture, undefined, instrumentEnv);
   try {
     if (result.code !== 0) throw new Error(`unfold-instrument ${fixture} → ${result.code}\n${result.stderr}`);
     await copyFile(path.join(tracerDir, 'runtime/UnfoldRuntime.hs'), path.join(dir, 'UnfoldRuntime.hs'));

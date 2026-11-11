@@ -155,10 +155,10 @@ newFid f = do
   modify' (\s -> s {sFid = i + 1, sMeta = (sMeta s) {mFunctions = (i, f) : mFunctions (sMeta s)}})
   pure i
 
-newSite :: SrcSpan -> RW Int
-newSite sp = do
+newSite :: Cfg -> SrcSpan -> RW Int
+newSite cfg sp = do
   i <- gets sSid
-  modify' (\s -> s {sSid = i + 1, sMeta = (sMeta s) {mSites = (i, toSpan sp) : mSites (sMeta s)}})
+  modify' (\s -> s {sSid = i + 1, sMeta = (sMeta s) {mSites = (i, toSpan cfg sp) : mSites (sMeta s)}})
   pure i
 
 newEq :: EqMeta -> RW Int
@@ -167,11 +167,30 @@ newEq e = do
   modify' (\s -> s {sEq = i + 1, sMeta = (sMeta s) {mEquations = (i, e) : mEquations (sMeta s)}})
   pure i
 
-toSpan :: SrcSpan -> Maybe Span
-toSpan = fmap toSpanR . realSpan
+-- | META span of a GHC span: columns converted to UTF-16 code units.
+toSpan :: Cfg -> SrcSpan -> Maybe Span
+toSpan cfg = fmap (toSpanR cfg) . realSpan
 
-toSpanR :: RealSrcSpan -> Span
-toSpanR s = Span (srcSpanStartLine s) (srcSpanStartCol s) (srcSpanEndLine s) (srcSpanEndCol s)
+toSpanR :: Cfg -> RealSrcSpan -> Span
+toSpanR cfg s =
+  Span (srcSpanStartLine s) (utf16Col cfg (startOf s)) (srcSpanEndLine s) (utf16Col cfg (endOf s))
+
+-- | 1-based column in UTF-16 code units of a (line, GHC column) position.
+-- GHC counts one column per code point and moves a tab to the next multiple of 8.
+utf16Col :: Cfg -> (Int, Int) -> Int
+utf16Col cfg (l, c) = 1 + sum [if fromEnum ch > 0xFFFF then 2 else 1 | ch <- take (charIndex c line) line]
+  where
+    line = IM.findWithDefault "" l (cLines cfg)
+
+-- | Character index in a line of a GHC column.
+charIndex :: Int -> String -> Int
+charIndex c = go 1 0
+  where
+    go col i rest
+      | col >= c = i
+      | otherwise = case rest of
+          [] -> i
+          ch : rest' -> go (if ch == '\t' then ((col - 1) `div` 8 + 1) * 8 + 1 else col + 1) (i + 1) rest'
 
 realSpan :: SrcSpan -> Maybe RealSrcSpan
 realSpan (RealSrcSpan s _) = Just s
@@ -185,17 +204,9 @@ slice cfg (l1, c1) (l2, c2)
   where
     line l = IM.findWithDefault "" l (cLines cfg)
     unlines' = foldr1 (\a b -> a ++ "\n" ++ b)
-    drop' c s = drop (index c s) s
-    take' c s = take (index c s) s
-    cut c s = take (index c (line l1) - index c1 (line l1)) s
-    -- character index of a GHC column (tabs advance to the next multiple of 8)
-    index c s = go 1 0 s
-      where
-        go col i rest
-          | col >= c = i
-          | otherwise = case rest of
-              [] -> i
-              ch : rest' -> go (if ch == '\t' then ((col - 1) `div` 8 + 1) * 8 + 1 else col + 1) (i + 1) rest'
+    drop' c s = drop (charIndex c s) s
+    take' c s = take (charIndex c s) s
+    cut c s = take (charIndex c (line l1) - charIndex c1 (line l1)) s
 
 startOf, endOf :: RealSrcSpan -> (Int, Int)
 startOf s = (srcSpanStartLine s, srcSpanStartCol s)
@@ -260,7 +271,7 @@ traceFun env l n b = do
       w = wName cfg n
       u = uName cfg n
       body = par (lam [c] (apps (var u) (map var (c : args))))
-  fid <- newFid (FunMeta (key n) "user" (toSpan (locA l)))
+  fid <- newFid (FunMeta (key n) "user" (toSpan cfg (locA l)))
   ms' <- mapM (traceMatch env fid c u) ms
   pure
     [ L l (simpleFun n args (apps (var (rt "callDyn")) [intE fid, valList args, body]))
@@ -361,7 +372,7 @@ rwGRHS env wrap firstGrhs (L lg (GRHS x guards body)) = do
                   , trim (slice cfg (startOf ms) (startOf g1)) ++ " " ++ slice cfg (startOf g) (endOf r)
                   )
             _ -> (Nothing, "")
-      eid <- newEq (EqMeta fid (toSpanR <$> eqSpan) (toSpanR <$> rhs) (maybe "" (\r -> slice cfg (startOf r) (endOf r)) rhs) eqText)
+      eid <- newEq (EqMeta fid (toSpanR cfg <$> eqSpan) (toSpanR cfg <$> rhs) (maybe "" (\r -> slice cfg (startOf r) (endOf r)) rhs) eqText)
       pure (Just (c, eid))
     _ -> pure Nothing
   (env', guards') <- rwStmts env guards
@@ -409,14 +420,14 @@ simpleStmt (L _ s) = case s of
 
 rwE :: Env -> LHsExpr GhcPs -> RW (LHsExpr GhcPs)
 rwE env e@(L l ex) = case ex of
-  HsVar _ (L _ n) | Just w <- lookupTraced env n -> occ env w <$> newSite (locA l)
+  HsVar _ (L _ n) | Just w <- lookupTraced env n -> occ env w <$> newSite cfg (locA l)
   HsApp {} -> rwApp env e
   HsAppType {} -> rwApp env e
   HsPar x inner -> L l . HsPar x <$> rwE env inner
   OpApp x a op b
     | Just w <- tracedOp op, resolvedOp op -> do
         a' <- rwE env a
-        sid <- newSite (locA l)
+        sid <- newSite cfg (locA l)
         b' <- rwE env b
         pure (L l (HsPar noAnn (apps (occ env w sid) [par a', par b'])))
     | otherwise -> do
@@ -426,12 +437,12 @@ rwE env e@(L l ex) = case ex of
   SectionL x a op
     | Just w <- tracedOp op, not (isChain a) || resolvedOp op -> do
         a' <- rwE env a
-        sid <- newSite (locA l)
+        sid <- newSite cfg (locA l)
         pure (L l (HsPar noAnn (apps (occ env w sid) [par a'])))
     | otherwise -> (\a' -> L l (SectionL x a' op)) <$> rwE env a
   SectionR x op b
     | Just w <- tracedOp op, not (isChain b) || resolvedOp op -> do
-        sid <- newSite (locA l)
+        sid <- newSite cfg (locA l)
         b' <- rwE env b
         let s = gen cfg "_s"
             y = gen cfg "_x"
@@ -493,6 +504,9 @@ walk env x
   | Just Refl <- eqT @d @(HsLocalBinds GhcPs) = pure x
   | Just Refl <- eqT @d @(MatchGroup GhcPs (LHsExpr GhcPs)) = pure x
   | Just Refl <- eqT @d @(ExprLStmt GhcPs) = pure x
+  -- a pun (@C {f}@) is printed as its label: a rewrite there would not show
+  | Just Refl <- eqT @d @(HsRecField GhcPs (LHsExpr GhcPs)), hfbPun x = pure x
+  | Just Refl <- eqT @d @(HsRecUpdField GhcPs GhcPs), hfbPun x = pure x
   | otherwise = gmapM (walk env) x
 
 -- | Application: when its head is a traced function, the site spans the
@@ -500,7 +514,7 @@ walk env x
 rwApp :: Env -> LHsExpr GhcPs -> RW (LHsExpr GhcPs)
 rwApp env e@(L l _) = case spineHead e of
   (L _ (HsVar _ (L _ n)), False) | Just w <- lookupTraced env n -> do
-    sid <- newSite (locA l)
+    sid <- newSite (eCfg env) (locA l)
     args (occ env w sid) e
   (L _ (HsVar _ (L _ n)), True) | isJust (lookupTraced env n) -> args (fst (spineHead e)) e
   _ -> case e of
@@ -544,8 +558,8 @@ rwLambda env (L l _) x mg = case mg of
         names = map fst named
         matched = [(v, p) | (v, Just p) <- named]
         env' = (shadowPats pats env) {eParent = Just c}
-    fid <- newFid (FunMeta "λ" "lambda" (toSpan (locA l)))
-    sid <- newSite (locA l)
+    fid <- newFid (FunMeta "λ" "lambda" (toSpan cfg (locA l)))
+    sid <- newSite cfg (locA l)
     body' <- rwE env' body
     let grhss b = GRHSs gx [L lg (GRHS grx [] b)] (EmptyLocalBinds ex)
         inner = case matched of

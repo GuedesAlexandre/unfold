@@ -16,7 +16,8 @@ import GHC.Types.Name.Reader (rdrNameOcc)
 import GHC.Utils.Error (pprMessages)
 import System.Environment (getArgs, lookupEnv)
 import System.Exit (ExitCode (..), exitWith)
-import System.IO (hPutStrLn, stderr)
+import GHC.IO.Encoding (setLocaleEncoding, utf8)
+import System.IO (hPutStrLn, hSetEncoding, stderr)
 import System.Process (readProcess)
 import Data.Set (Set)
 
@@ -26,6 +27,9 @@ import Unfold.Rewrite (instrumentModule)
 
 main :: IO ()
 main = do
+  -- sources, generated program and META are UTF-8 whatever the locale
+  setLocaleEncoding utf8
+  hSetEncoding stderr utf8
   args <- getArgs
   case args of
     ["--roundtrip", input, output] -> roundtrip input output

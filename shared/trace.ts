@@ -9,6 +9,7 @@ export type Value =
 export type CallKind = 'user' | 'lib' | 'lambda' | 'method';
 export interface Call {
   id: number; parent: number;            // 0 = racine (main), absente de calls
+  parentApprox?: true;                   // parent déduit à l'exécution (appel passé par l'alias) : il peut ne pas être l'appelant lexical
   enter: number; exit?: number;          // numéros de séquence globaux (ordre réel)
   name: string; kind: CallKind;
   defSpan?: Span;                        // définition de la fonction
