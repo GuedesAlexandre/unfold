@@ -5,7 +5,8 @@ Visualiseur d'appels de fonctions : on écrit un programme Haskell, on l'exécut
 ## Prérequis
 
 - GHC 9.10 (testé avec 9.10.3) et cabal
-- Node.js 20 ou plus récent
+- Accès réseau au premier `cabal build` (index Hackage)
+- Node.js 22.12 ou plus récent, en version paire (22, 24, 26 ; vitest exclut 23 et 25)
 
 ## Démarrage
 
