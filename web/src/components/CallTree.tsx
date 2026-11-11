@@ -2,8 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Call, Trace } from '@unfold/shared/trace';
 import { childrenOf, type Step, type ViewState } from '../model/steps';
 import { layoutForSteps, type Rect } from '../model/layout';
-import { LIB_BTN, nodeContent, nodeSize, NODE_PAD_X } from '../model/valueLayout';
-import { FONT } from '../model/valueLayout';
+import { FONT, LIB_BTN, nodeContent, nodeSize, NODE_PAD_X } from '../model/valueLayout';
 import { VLView } from './ValueView';
 
 export interface CallTreeProps {
@@ -18,6 +17,11 @@ export interface CallTreeProps {
 
 type Status = 's-wait' | 's-done' | 's-idle' | 's-fail' | 's-failrel';
 
+const STATE_TEXT: Record<Status, string> = {
+  's-wait': 'en attente', 's-done': 'terminé', 's-idle': 'pas encore exécuté',
+  's-fail': 'a planté (origine de l\'erreur)', 's-failrel': 'a planté (à cause d\'un appel interne)',
+};
+
 interface NodeProps {
   call: Call; rect: Rect; status: Status; current: boolean; done: boolean; open: boolean;
   onToggleLib: (id: number) => void; onSelect?: (id: number) => void;
@@ -30,7 +34,14 @@ const NodeView = memo(function NodeView({ call, rect, status, current, done, ope
   return (
     <g className={`node ${status}${current ? ' current' : ''}`} transform={`translate(${rect.x} ${rect.y})`}
       onClick={() => onSelect?.(call.id)}>
+      <title>{`${n.title} : ${current && status === 's-wait' ? 'en cours' : STATE_TEXT[status]}`}</title>
+      {current && <rect className="ring" x={-4} y={-4} width={rect.w + 8} height={rect.h + 8} rx={9} />}
       <rect className="box" width={rect.w} height={rect.h} rx={6} />
+      {status === 's-fail' && (
+        <g className="fail-badge" transform={`translate(${rect.w} 0)`}>
+          <circle r={9} /><text textAnchor="middle" dominantBaseline="central" fontSize={FONT}>✗</text>
+        </g>
+      )}
       {n.lib && (
         <g className="toggle" transform={`translate(${NODE_PAD_X - 2} ${cy - 8})`} role="button"
           aria-label={open ? 'Replier' : 'Déplier'}
@@ -68,6 +79,7 @@ export function CallTree({ trace, steps, state, expanded, expandAll, onToggleLib
   const svgRef = useRef<SVGSVGElement>(null);
   const [xf, setXf] = useState<Xf>({ x: 20, y: 20, k: 1 });
   const [dragging, setDragging] = useState(false);
+  const [smooth, setSmooth] = useState(false); // transition seulement pour le recentrage
   const xfRef = useRef(xf); xfRef.current = xf;
 
   // recentrage sur l'appel courant (ou ajustement de l'ensemble s'il n'y en a pas)
@@ -75,6 +87,7 @@ export function CallTree({ trace, steps, state, expanded, expandAll, onToggleLib
   useEffect(() => {
     const el = svgRef.current; if (!el) return;
     const vw = el.clientWidth, vh = el.clientHeight;
+    setSmooth(true);
     if (cur) {
       const k = xfRef.current.k;
       setXf({ k, x: vw / 2 - (cur.x + cur.w / 2) * k, y: vh / 2 - (cur.y + cur.h / 2) * k });
@@ -88,6 +101,7 @@ export function CallTree({ trace, steps, state, expanded, expandAll, onToggleLib
     const el = svgRef.current; if (!el) return;
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
+      setSmooth(false);
       const r = el.getBoundingClientRect();
       const px = e.clientX - r.left, py = e.clientY - r.top;
       setXf((t) => {
@@ -100,17 +114,23 @@ export function CallTree({ trace, steps, state, expanded, expandAll, onToggleLib
     return () => el.removeEventListener('wheel', onWheel);
   }, []);
 
-  const drag = useRef<{ x: number; y: number } | null>(null);
+  // Le déplacement ne commence (et la capture du pointeur non plus) qu'après 4 px de mouvement :
+  // un simple clic atteint donc le nœud (onSelect), un glissement ne sélectionne rien.
+  const drag = useRef<{ x: number; y: number; sx: number; sy: number; active: boolean } | null>(null);
   const onPointerDown = (e: React.PointerEvent) => {
     if ((e.target as Element).closest('.toggle')) return;
-    drag.current = { x: e.clientX, y: e.clientY };
-    e.currentTarget.setPointerCapture(e.pointerId);
-    setDragging(true);
+    drag.current = { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY, active: false };
   };
   const onPointerMove = (e: React.PointerEvent) => {
     const d = drag.current; if (!d) return;
+    if (!d.active) {
+      if (Math.hypot(e.clientX - d.sx, e.clientY - d.sy) <= 4) return;
+      d.active = true;
+      e.currentTarget.setPointerCapture(e.pointerId);
+      setDragging(true); setSmooth(false);
+    }
     const dx = e.clientX - d.x, dy = e.clientY - d.y;
-    drag.current = { x: e.clientX, y: e.clientY };
+    d.x = e.clientX; d.y = e.clientY;
     setXf((t) => ({ ...t, x: t.x + dx, y: t.y + dy }));
   };
   const endDrag = () => { drag.current = null; setDragging(false); };
@@ -133,8 +153,8 @@ export function CallTree({ trace, steps, state, expanded, expandAll, onToggleLib
   }
 
   return (
-    <svg ref={svgRef} className={`call-tree${dragging ? ' dragging' : ''}`} onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove} onPointerUp={endDrag} onPointerCancel={endDrag} role="img" aria-label="Arbre des appels">
+    <svg ref={svgRef} className={`call-tree${dragging ? ' dragging' : ''}${smooth ? ' smooth' : ''}`} onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove} onPointerUp={endDrag} onPointerCancel={endDrag}>
       <g className="world" style={{ transform: `translate(${xf.x}px, ${xf.y}px) scale(${xf.k})` }}>
         {edges}{nodes}
       </g>

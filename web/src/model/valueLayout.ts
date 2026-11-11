@@ -9,7 +9,7 @@ const CELL_PAD = 4;
 
 export type Part =
   | { p: 'text'; x: number; y: number; text: string; cell: boolean; muted?: boolean }
-  | { p: 'rect'; x: number; y: number; w: number; h: number; cls: 'cell' | 'todo' | 'dot' }
+  | { p: 'rect'; x: number; y: number; w: number; h: number; cls: 'cell' | 'todo' | 'dot'; title?: string }
   | { p: 'line'; x1: number; y1: number; x2: number; y2: number }
   | { p: 'sub'; x: number; y: number; l: VL };
 export interface VL { w: number; h: number; parts: Part[] }
@@ -30,7 +30,7 @@ function inline(items: VL[], gap: number): VL {
   return { w: x, h, parts };
 }
 
-const isTuple = (n: string) => /^\(,*\)$/.test(n);
+const isTuple = (n: string) => /^\(,+\)$/.test(n);
 
 /**
  * Heuristique « type récursif » (on ne connaît pas les types, seulement les valeurs) : un `con`
@@ -45,45 +45,70 @@ export function isTreeValue(v: Value): boolean {
   return nullary.some((n, i) => nullary.indexOf(n) !== i);
 }
 
-const TREE_GAP = 8, TREE_LEVEL = 18;
-interface TNode { label: string; leaf: boolean; kids: TNode[] }
-function toTNode(v: Value): TNode {
-  if (v.t !== 'con') return { label: formatValue(v), leaf: false, kids: [] };
-  const kids = v.args.filter((a) => a.t === 'con' && !isTuple(a.name)).map(toTNode);
-  const rest = v.args.filter((a) => !(a.t === 'con' && !isTuple(a.name)));
-  if (v.args.length === 0) return { label: v.name, leaf: true, kids: [] };
-  return { label: [v.name, ...rest.map((a) => (needsParens(a) ? `(${formatValue(a)})` : formatValue(a)))].join(' '), leaf: false, kids };
+const TREE_GAP = 8, TREE_LEVEL = 18, MAX_STR = 40;
+interface TNode { name: string; leaf: boolean; rest: Value[]; kids: TNode[] }
+const isCon = (a: Value): a is Extract<Value, { t: 'con' }> => a.t === 'con' && !isTuple(a.name);
+function toTNode(v: Extract<Value, { t: 'con' }>): TNode {
+  return {
+    name: v.name, leaf: v.args.length === 0,
+    rest: v.args.filter((a) => !isCon(a)),
+    kids: v.args.filter(isCon).map(toTNode),
+  };
 }
+function leafNames(n: TNode, acc: Set<string>): Set<string> {
+  if (n.leaf) acc.add(n.name);
+  for (const k of n.kids) leafNames(k, acc);
+  return acc;
+}
+/**
+ * Arbre dessiné : chaque nœud montre son constructeur (et ses arguments non récursifs, thunk = case
+ * grise). Si toutes les feuilles nullaires portent le même nom, elles sont des points, avec une
+ * légende sous l'arbre et un <title> ; sinon chaque feuille est une petite boîte nommée.
+ */
 function treeVL(root: TNode): VL {
   const parts: Part[] = [];
-  const boxH = LH + 2;
-  // retourne largeur du sous-arbre et position du centre du nœud
+  const names = leafNames(root, new Set());
+  const sharedLeaf = names.size === 1 ? [...names][0]! : null;
   const go = (n: TNode, x0: number, y: number): { w: number; cx: number; h: number } => {
-    const nw = n.leaf ? 10 : n.label.length * CW + 10;
-    const nh = n.leaf ? 10 : boxH;
+    const dot = n.leaf && sharedLeaf !== null;
+    const label = dot ? null : inline([textVL(n.name, true), ...n.rest.map((a) => argVL(a, true))], CW);
+    const nw = label ? label.w + 10 : 10;
+    const nh = label ? Math.max(LH + 2, label.h + 2) : 10;
     const kids: { w: number; cx: number; h: number }[] = [];
     let cur = x0;
     for (const k of n.kids) { const r = go(k, cur, y + nh + TREE_LEVEL); kids.push(r); cur += r.w + TREE_GAP; }
     const kidsW = kids.length ? cur - TREE_GAP - x0 : 0;
     const cx = kids.length ? (kids[0]!.cx + kids[kids.length - 1]!.cx) / 2 : x0 + nw / 2;
-    const w = Math.max(nw, kidsW);
     const nx = cx - nw / 2;
-    if (n.leaf) parts.push({ p: 'rect', x: nx, y, w: nw, h: nh, cls: 'dot' });
+    if (!label) parts.push({ p: 'rect', x: nx, y, w: nw, h: nh, cls: 'dot', title: n.name });
     else {
       parts.push({ p: 'rect', x: nx, y, w: nw, h: nh, cls: 'cell' });
-      parts.push({ p: 'text', x: nx + 5, y: y + nh / 2, text: n.label, cell: true });
+      parts.push({ p: 'sub', x: nx + 5, y: y + (nh - label.h) / 2, l: label });
     }
     for (const k of kids) parts.push({ p: 'line', x1: cx, y1: y + nh, x2: k.cx, y2: y + nh + TREE_LEVEL });
-    return { w, cx, h: nh + (kids.length ? TREE_LEVEL + Math.max(...kids.map((k) => k.h)) : 0) };
+    return { w: Math.max(nw, kidsW), cx, h: nh + (kids.length ? TREE_LEVEL + Math.max(...kids.map((k) => k.h)) : 0) };
   };
-  const r = go(root, 0, 1);
-  // décalage si le nœud racine déborde à gauche (parent plus large que ses enfants)
-  const minX = Math.min(0, ...parts.map((p) => (p.p === 'line' ? Math.min(p.x1, p.x2) : p.x)));
-  if (minX < 0) for (const p of parts) {
-    if (p.p === 'line') { p.x1 -= minX; p.x2 -= minX; } else p.x -= minX;
+  const r = go(root, 1, 1);
+  const extent = (p: Part): [number, number] => p.p === 'line' ? [Math.min(p.x1, p.x2), Math.max(p.x1, p.x2)]
+    : p.p === 'text' ? [p.x, p.x + p.text.length * CW]
+    : p.p === 'sub' ? [p.x, p.x + p.l.w] : [p.x, p.x + p.w];
+  const minX = Math.min(...parts.map((p) => extent(p)[0]));
+  if (minX !== 0) for (const p of parts) { if (p.p === 'line') { p.x1 -= minX; p.x2 -= minX; } else p.x -= minX; }
+  let w = Math.max(...parts.map((p) => extent(p)[1])) + 1;
+  let h = r.h + 2;
+  if (sharedLeaf !== null) {
+    const legend = `● = ${sharedLeaf}`;
+    parts.push({ p: 'text', x: 0, y: h + LH / 2, text: legend, cell: false, muted: true });
+    h += LH; w = Math.max(w, legend.length * CW);
   }
-  const maxX = Math.max(r.w, ...parts.map((p) => (p.p === 'rect' ? p.x + p.w : p.p === 'text' ? p.x + p.text.length * CW : 0)));
-  return { w: maxX, h: r.h + 2, parts };
+  return { w, h, parts };
+}
+
+/** Argument d'un `con` (entre parenthèses s'il le faut). */
+function argVL(a: Value, cell: boolean): VL {
+  return needsParens(a) && a.t === 'con' && !isTreeValue(a)
+    ? inline([textVL('(', cell), layoutValue(a, cell), textVL(')', cell)], 1)
+    : layoutValue(a, cell);
 }
 
 /** Disposition d'une valeur. `cell` : la valeur est déjà dans une case (texte en couleur de case). */
@@ -95,6 +120,10 @@ export function layoutValue(v: Value, cell = false): VL {
         { p: 'text', x: 4, y: LH / 2, text: 'non calculé', cell: false, muted: true }] };
     }
     case 'cut': return textVL('…', cell);
+    case 'str': {
+      const cutText = v.v.length > MAX_STR;
+      return textVL(`"${cutText ? v.v.slice(0, MAX_STR) : v.v}${cutText || v.rest !== 'end' ? '…' : ''}"`, cell);
+    }
     case 'list': {
       if (v.items.length === 0 && v.rest === 'end') return textVL('[]', cell);
       const cells: VL[] = v.items.map((it) => boxed(layoutValue(it, true)));
@@ -111,11 +140,7 @@ export function layoutValue(v: Value, cell = false): VL {
         return inline(items, 2);
       }
       const items: VL[] = [textVL(v.name, cell)];
-      for (const a of v.args) {
-        items.push(needsParens(a) && a.t === 'con' && !isTreeValue(a)
-          ? inline([textVL('(', cell), layoutValue(a, cell), textVL(')', cell)], 1)
-          : layoutValue(a, cell));
-      }
+      for (const a of v.args) items.push(argVL(a, cell));
       return inline(items, CW);
     }
     default: return textVL(formatValue(v), cell);
@@ -129,7 +154,7 @@ function boxed(l: VL): VL {
 
 // ---- Contenu d'un nœud de l'arbre ----
 export const NODE_PAD_X = 8, NODE_PAD_Y = 4, LIB_BTN = 18;
-export interface NodeContent { label: VL; result: VL | null; w: number; h: number; lib: boolean }
+export interface NodeContent { title: string; label: VL; result: VL | null; w: number; h: number; lib: boolean }
 
 /**
  * Contenu final d'un nœud (nom, arguments, `= résultat`). La taille réserve toujours la place du
@@ -142,6 +167,8 @@ export function nodeContent(c: Call): NodeContent {
   const result = c.result ? inline([textVL('=', false), layoutValue(c.result)], CW) : null;
   const lib = c.kind === 'lib';
   const body = result ? inline([label, result], CW * 1.5) : label;
-  return { label, result, lib, w: body.w + 2 * NODE_PAD_X + (lib ? LIB_BTN : 0), h: Math.max(28, body.h + 2 * NODE_PAD_Y) };
+  return { title: callTitle(c), label, result, lib, w: body.w + 2 * NODE_PAD_X + (lib ? LIB_BTN : 0), h: Math.max(28, body.h + 2 * NODE_PAD_Y) };
 }
+const callTitle = (c: Call) => [name0(c), ...c.args.map(formatValue)].join(' ');
+const name0 = (c: Call) => (c.kind === 'lambda' ? 'λ' : c.name);
 export const nodeSize = (c: Call) => { const n = nodeContent(c); return { w: n.w, h: n.h }; };

@@ -12,7 +12,7 @@ export function VLView({ l }: { l: VL }) {
             return <text key={i} x={p.x} y={p.y} className={p.muted ? 'v-text v-muted' : p.cell ? 'v-text v-ctext' : 'v-text'}
               dominantBaseline="central" fontSize={FONT}>{p.text}</text>;
           case 'rect':
-            return <rect key={i} x={p.x} y={p.y} width={p.w} height={p.h} rx={p.cls === 'dot' ? 5 : 3} className={`v-${p.cls}`} />;
+            return <rect key={i} x={p.x} y={p.y} width={p.w} height={p.h} rx={p.cls === 'dot' ? 5 : 3} className={`v-${p.cls}`}>{p.title && <title>{`Feuille : ${p.title}`}</title>}</rect>;
           case 'line':
             return <line key={i} x1={p.x1} y1={p.y1} x2={p.x2} y2={p.y2} className="v-line" />;
           case 'sub':

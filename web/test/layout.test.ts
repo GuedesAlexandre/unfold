@@ -102,3 +102,50 @@ test('tailles de valeurs : liste = une case par élément, thunk = case grise', 
   // la taille réserve le résultat : identique avant/après retour (la trace est complète)
   expect(nodeSize(qsort.calls[0]!).w).toBeGreaterThan(nodeSize({ ...qsort.calls[0]!, result: undefined }).w);
 });
+
+import type { Value } from '@unfold/shared/trace';
+import { CW, type Part, type VL } from '../src/model/valueLayout';
+const con = (name: string, ...args: Value[]): Value => ({ t: 'con', name, args });
+const flat = (l: VL, out: Part[] = []): Part[] => { for (const p of l.parts) { out.push(p); if (p.p === 'sub') flat(p.l, out); } return out; };
+const texts = (l: VL) => flat(l).filter((p): p is Extract<Part, { p: 'text' }> => p.p === 'text').map((p) => p.text);
+const inBounds = (l: VL) => flat(l).every((p) => p.p === 'rect' ? p.x >= 0 && p.x + p.w <= l.w + 0.01 : true);
+
+describe('arbres de valeurs', () => {
+  test('feuilles nullaires identiques : points, nom en légende et <title>', () => {
+    const l = layoutValue(con('Node', con('Node', con('F'), num('1'), con('F')), num('2'), con('F')));
+    const dots = flat(l).filter((p) => p.p === 'rect' && p.cls === 'dot');
+    expect(dots).toHaveLength(3);
+    expect(dots.every((d) => d.p === 'rect' && d.title === 'F')).toBe(true);
+    expect(texts(l)).toContain('● = F');
+    expect(inBounds(l)).toBe(true);
+  });
+  test('feuilles nullaires différentes : chaque feuille est une boîte nommée', () => {
+    const l = layoutValue(con('Node', con('Node', con('A'), num('1'), con('B')), num('2'), con('C')));
+    expect(flat(l).some((p) => p.p === 'rect' && p.cls === 'dot')).toBe(false);
+    const t = texts(l);
+    for (const n of ['A', 'B', 'C']) expect(t).toContain(n);
+    expect(inBounds(l)).toBe(true);
+  });
+  test('Pair Red Red : les deux noms restent visibles', () => {
+    const l = layoutValue(con('Pair', con('Red'), con('Red')));
+    expect(flat(l).filter((p) => p.p === 'rect' && p.cls === 'dot')).toHaveLength(2);
+    expect(texts(l)).toContain('● = Red');
+  });
+  test('thunk dans un nœud d\'arbre : case grise, pas « ? »', () => {
+    const l = layoutValue(con('Node', con('Leaf'), { t: 'thunk' }, con('Leaf')));
+    expect(flat(l).some((p) => p.p === 'rect' && p.cls === 'todo')).toBe(true);
+    expect(texts(l)).not.toContain('?');
+    expect(texts(l)).toContain('non calculé');
+    expect(inBounds(l)).toBe(true);
+  });
+  test('cut dans un nœud d\'arbre : …', () => {
+    expect(texts(layoutValue(con('Node', con('Leaf'), { t: 'cut' }, con('Leaf'))))).toContain('…');
+  });
+});
+
+test('unité () dessinée comme () et chaîne longue plafonnée avec …', () => {
+  expect(texts(layoutValue(con('()')))).toEqual(['()']);
+  const l = layoutValue({ t: 'str', v: 'x'.repeat(500), rest: 'end' });
+  expect(l.w).toBeLessThanOrEqual(45 * CW);
+  expect(texts(l)[0]).toMatch(/…"$/);
+});
