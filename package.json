@@ -1,0 +1,8 @@
+{
+  "name": "unfold",
+  "private": true,
+  "workspaces": ["shared", "server", "web"],
+  "scripts": {
+    "test": "npm -w server test && npm -w web test"
+  }
+}
