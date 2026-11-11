@@ -65,15 +65,15 @@ export async function roundtripAndRun(fixture: string): Promise<string> {
 }
 
 export interface Meta {
-  functions: Record<string, { name: string; kind: 'user' | 'lambda' | 'method'; defSpan: Span | null }>;
+  functions: Record<string, { name: string; kind: 'user' | 'lib' | 'lambda' | 'method'; defSpan: Span | null }>;
   sites: Record<string, { appSpan: Span | null }>;
   equations: Record<string, {
     fid: number; eqSpan: Span | null; rhsSpan: Span | null; rhsText: string; eqText: string;
   }>;
 }
 
-/** Run `unfold-instrument IN OUT META` on a fixture (or on given source text) in a fresh directory. */
-export async function instrument(fixture: string, source?: string, env?: Record<string, string>): Promise<{
+/** Run `unfold-instrument [FLAGS] IN OUT META` on a fixture (or on given source text) in a fresh directory. */
+export async function instrument(fixture: string, source?: string, env?: Record<string, string>, flags: string[] = []): Promise<{
   dir: string; result: RunResult; out: string; metaPath: string;
 }> {
   const dir = await mkdtemp(path.join(tmpdir(), 'unfold-in-'));
@@ -82,26 +82,42 @@ export async function instrument(fixture: string, source?: string, env?: Record<
   else await writeFile(input, source);
   const out = path.join(dir, 'Main.hs');
   const metaPath = path.join(dir, 'meta.json');
-  const result = await run(await instrumentBin(), [input, out, metaPath], { cwd: dir, env, ...LIMITS });
+  const result = await run(await instrumentBin(), [...flags, input, out, metaPath], { cwd: dir, env, ...LIMITS });
   return { dir, result, out, metaPath };
+}
+
+const GHC_FLAGS = ['-O0', '-package', 'ghc-heap', '-fno-omit-yields', '-rtsopts', '-with-rtsopts=-M512m'];
+
+/**
+ * Instrument a fixture and compile it with the runtime (same flags as the server);
+ * returns the result of `ghc`, the generated source and the working directory (to remove).
+ */
+export async function instrumentAndCompile(fixture: string, flags: string[] = [], instrumentEnv?: Record<string, string>): Promise<{
+  dir: string; ghc: RunResult; source: string; metaPath: string;
+}> {
+  const { dir, result, out, metaPath } = await instrument(fixture, undefined, instrumentEnv, flags);
+  try {
+    if (result.code !== 0) throw new Error(`unfold-instrument ${fixture} → ${result.code}\n${result.stderr}`);
+    for (const f of ['UnfoldRuntime.hs', 'UnfoldPrelude.hs']) await copyFile(path.join(tracerDir, 'runtime', f), path.join(dir, f));
+    const source = await readFile(out, 'utf8');
+    const ghc = await run('ghc', [...GHC_FLAGS, '-outputdir', dir, '-o', path.join(dir, 'prog'), out], { cwd: dir, ...LIMITS });
+    return { dir, ghc, source, metaPath };
+  } catch (e) {
+    await rm(dir, { recursive: true, force: true });
+    throw e;
+  }
 }
 
 /**
  * Instrument a fixture, compile it with the runtime (same flags as the server),
  * run it with `UNFOLD_TRACE`; returns stdout, the raw trace, META and the generated source.
  */
-export async function instrumentAndRun(fixture: string, instrumentEnv?: Record<string, string>): Promise<{
+export async function instrumentAndRun(fixture: string, instrumentEnv?: Record<string, string>, flags: string[] = []): Promise<{
   stdout: string; raw: RawTrace; meta: Meta; source: string;
 }> {
-  const { dir, result, out, metaPath } = await instrument(fixture, undefined, instrumentEnv);
+  const { dir, ghc, source, metaPath } = await instrumentAndCompile(fixture, flags, instrumentEnv);
   try {
-    if (result.code !== 0) throw new Error(`unfold-instrument ${fixture} → ${result.code}\n${result.stderr}`);
-    await copyFile(path.join(tracerDir, 'runtime/UnfoldRuntime.hs'), path.join(dir, 'UnfoldRuntime.hs'));
-    const source = await readFile(out, 'utf8');
-    await must('ghc', [
-      '-O0', '-package', 'ghc-heap', '-fno-omit-yields', '-rtsopts', '-with-rtsopts=-M512m',
-      '-outputdir', dir, '-o', path.join(dir, 'prog'), out,
-    ], dir).catch((e: Error) => { throw new Error(`${e.message}\n--- generated ${fixture} ---\n${source}`); });
+    if (ghc.code !== 0) throw new Error(`ghc → ${ghc.code}\n${ghc.stderr}\n--- generated ${fixture} ---\n${source}`);
     const tracePath = path.join(dir, 'trace.json');
     const r = await run(path.join(dir, 'prog'), [], { cwd: dir, env: { UNFOLD_TRACE: tracePath }, ...LIMITS });
     if (r.code !== 0) throw new Error(`instrumented ${fixture} → ${r.code}\n${r.stderr}`);

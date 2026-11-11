@@ -21,13 +21,25 @@
 -- untouched.
 --
 -- Lambdas (@\\p1 … pk -> e@) become calls of a node named @λ@.
-module Unfold.Rewrite (instrumentModule) where
+--
+-- A user operator is traced like a function: the operator itself is the
+-- alias, its @__w@ / @__u@ bindings get generated alphanumeric names.
+--
+-- Library functions ('libTable'): an occurrence that GHC resolves to the
+-- Prelude's function (see 'Opts') becomes
+-- @(UnfoldPrelude.f (UnfoldRuntime.Ctx c sid))@; the Prelude stays imported,
+-- so an occurrence left alone still means the Prelude's function.
+--
+-- Instance methods and class default methods with arguments: each method
+-- becomes @m a1 … an = UnfoldRuntime.callDyn fid [val a1, …] (\\c -> case
+-- (a1, …, an) of <equations as alternatives>)@ (genre @method@).
+module Unfold.Rewrite (Opts (..), instrumentModule, libTable) where
 
 import Control.Monad.Trans.State.Strict (State, gets, modify', runState)
-import Data.Char (isSpace)
+import Data.Char (isSpace, ord)
 import Data.Data (Data, gmapM, gmapQ, cast, (:~:) (..), eqT)
 import qualified Data.IntMap.Strict as IM
-import Data.List (isPrefixOf, sortBy)
+import Data.List (intercalate, isPrefixOf, sortBy)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isJust)
 import Data.Set (Set)
@@ -51,11 +63,12 @@ data Cfg = Cfg
   , cPre :: String -- ^ prefix of generated variables (no user name starts with it)
   , cSufW, cSufU :: String -- ^ suffixes of the generated functions
   , cMonoLocal :: Bool -- ^ MonoLocalBinds is on
+  , cLibQual :: Map.Map String RdrName -- ^ qualified library names (@L.map@) → their UnfoldPrelude function
   }
 
 data Env = Env
   { eCfg :: Cfg
-  , eScope :: Map.Map String RdrName -- ^ traced functions in scope → their @__w@ name
+  , eScope :: Map.Map String RdrName -- ^ traced functions in scope → their @__w@ name (or UnfoldPrelude function)
   , eParent :: Maybe RdrName -- ^ variable holding the current call id; Nothing = 0
   }
 
@@ -63,12 +76,20 @@ data St = St {sFid, sSid, sEq :: !Int, sMeta :: Meta}
 
 type RW = State St
 
+data Opts = Opts
+  { oMonoLocal :: Bool -- ^ MonoLocalBinds is on
+  , oLib :: Set String
+  -- ^ library names (as written: @map@, @L.map@, @++@) that GHC resolves,
+  -- in the module's import scope, to the Prelude's function; empty: the
+  -- library is not traced (@--no-lib@)
+  }
+
 -- | Rewrite the module; Left "no-main" if it has no top-level @main@.
--- Arguments: MonoLocalBinds on?, operators of the resolved chains, source text.
-instrumentModule :: Bool -> Set RealSrcSpan -> String -> HsModule GhcPs -> Either String (HsModule GhcPs, Meta)
-instrumentModule monoLocal resolved src m
+-- Arguments: options, operators of the resolved chains, source text.
+instrumentModule :: Opts -> Set RealSrcSpan -> String -> HsModule GhcPs -> Either String (HsModule GhcPs, Meta)
+instrumentModule opts resolved src m
   | not hasMain = Left "no-main"
-  | otherwise = Right (m {hsmodDecls = decls', hsmodImports = hsmodImports m ++ runtimeImports}, sMeta st)
+  | otherwise = Right (m {hsmodDecls = decls', hsmodImports = hsmodImports m ++ runtimeImports ++ libImport}, meta)
   where
     decls = hsmodDecls m
     hasMain = or [isMain (fun_id b) | L _ (ValD _ b@FunBind{}) <- decls]
@@ -83,11 +104,73 @@ instrumentModule monoLocal resolved src m
               u = "__u" ++ i
         , all (\t -> Set.notMember (t ++ w) names && Set.notMember (t ++ u) names) traced
         ]
-    cfg = Cfg resolved (IM.fromList (zip [1 ..] (lines src))) pre sw su monoLocal
+    -- library names: not defined by the module; the Foldable ones are left
+    -- out when the module mentions Foldable (instances, deriving, contexts)
+    userTop = Set.fromList (map key (topBinders m))
+    foldable = any ((== "Foldable") . key) (collect @RdrName m)
+    libOk s = case Map.lookup (occOf s) libMap of
+      Just (_, _, fold) -> not (fold && foldable)
+      Nothing -> False
+    libFun s = case Map.lookup (occOf s) libMap of
+      Just (_, f, _) -> mkRdrQual libMod (mkVarOcc f)
+      Nothing -> error "libFun"
+    eligible = filter libOk (Set.toList (oLib opts))
+    libUnqual = [(s, libFun s) | s <- eligible, occOf s == s, Set.notMember s userTop]
+    libQual = Map.fromList [(s, libFun s) | s <- eligible, occOf s /= s]
+    cfg = Cfg resolved (IM.fromList (zip [1 ..] (lines src))) pre sw su (oMonoLocal opts) libQual
     topTraced = [n | L _ (ValD _ b) <- decls, Just n <- [tracedName b]]
-    env0 = Env cfg (Map.fromList [(key n, wName cfg n) | n <- topTraced]) Nothing
+    env0 = Env cfg (Map.fromList (libUnqual ++ [(key n, wName cfg n) | n <- topTraced])) Nothing
     trSet = Set.fromList (map key topTraced)
     (decls', st) = runState (concat <$> mapM (rwTopDecl env0 trSet) decls) (St 1 1 1 emptyMeta)
+    usesLib = any isLib (collect @RdrName decls')
+    isLib n = case n of
+      Qual md _ -> md == libMod
+      _ -> False
+    libImport = [noLocA (simpleImportDecl libMod) {ideclQualified = QualifiedPre} | usesLib]
+    meta
+      | usesLib = (sMeta st) {mFunctions = mFunctions (sMeta st) ++ reverse [(fid, FunMeta n "lib" Nothing) | (n, fid, _) <- libTable]}
+      | otherwise = sMeta st
+
+-- | The library functions of UnfoldPrelude: displayed name, function id,
+-- name in UnfoldPrelude. Same table as @UnfoldPrelude.libNames@.
+libTable :: [(String, Int, String)]
+libTable =
+  [ ("map", -1, "map"), ("filter", -2, "filter"), ("foldr", -3, "foldr"), ("foldl", -4, "foldl")
+  , ("length", -5, "length"), ("sum", -6, "sum"), ("product", -7, "product"), ("++", -8, "append")
+  , ("reverse", -9, "reverse"), ("concat", -10, "concat"), ("zip", -11, "zip"), ("take", -12, "take")
+  , ("drop", -13, "drop"), ("elem", -14, "elem"), ("replicate", -15, "replicate")
+  ]
+
+-- | Name → (function id, UnfoldPrelude function, generalised over Foldable in the Prelude?)
+libMap :: Map.Map String (Int, String, Bool)
+libMap = Map.fromList [(n, (fid, f, n `elem` foldables)) | (n, fid, f) <- libTable]
+  where
+    foldables = ["foldr", "foldl", "length", "sum", "product", "elem", "concat"]
+
+-- | Unqualified part of a name as written (@L.map@ → @map@, @++@ → @++@).
+occOf :: String -> String
+occOf s = case break (== '.') s of
+  (c : _, '.' : rest) | c `elem` ['A' .. 'Z'], not (null rest) -> occOf rest
+  _ -> s
+
+libMod :: ModuleName
+libMod = mkModuleName "UnfoldPrelude"
+
+-- | Names the module defines at top level: functions, values, record
+-- fields, class methods, foreign imports, pattern synonyms.
+topBinders :: HsModule GhcPs -> [RdrName]
+topBinders m = concatMap one (hsmodDecls m) ++ fields
+  where
+    one :: LHsDecl GhcPs -> [RdrName]
+    one (L _ d) = case d of
+      ValD _ FunBind {fun_id = L _ n} -> [n]
+      ValD _ PatBind {pat_lhs = p} -> patsBinders p
+      ValD _ (PatSynBind _ PSB {psb_id = L _ n}) -> [n]
+      TyClD _ ClassDecl {tcdSigs = sigs} -> [unLoc n | L _ (ClassOpSig _ _ ns _) <- sigs, n <- ns]
+      ForD _ ForeignImport {fd_name = L _ n} -> [n]
+      SigD _ (TypeSig _ ns _) -> map unLoc ns
+      _ -> []
+    fields = [unLoc (foLabel f) | f <- collect @(FieldOcc GhcPs) (hsmodDecls m)]
 
 -- | First element of an infinite list.
 firstOf :: [a] -> a
@@ -109,15 +192,23 @@ isMain (L _ n) = isUnqual n && occNameString (rdrNameOcc n) == "main"
 key :: RdrName -> String
 key = occNameString . rdrNameOcc
 
--- | A traced function: alphanumeric, unqualified, at least one pattern.
+-- | A traced function (or operator): unqualified, at least one pattern.
 tracedName :: HsBind GhcPs -> Maybe RdrName
 tracedName FunBind {fun_id = L _ n, fun_matches = MG _ (L _ (L _ Match {m_pats = _ : _} : _))}
-  | isUnqual n, not (isSymOcc (rdrNameOcc n)) = Just n
+  | isUnqual n = Just n
 tracedName _ = Nothing
 
+-- | Names of the @__w@ / @__u@ bindings; an operator's are alphanumeric,
+-- made of the generated prefix and its characters' codes
+-- (@<+>@ → @_unfold_op60_43_62__w@).
 wName, uName :: Cfg -> RdrName -> RdrName
-wName cfg n = mkRdrUnqual (mkVarOcc (key n ++ cSufW cfg))
-uName cfg n = mkRdrUnqual (mkVarOcc (key n ++ cSufU cfg))
+wName cfg n = mkRdrUnqual (mkVarOcc (baseName cfg n ++ cSufW cfg))
+uName cfg n = mkRdrUnqual (mkVarOcc (baseName cfg n ++ cSufU cfg))
+
+baseName :: Cfg -> RdrName -> String
+baseName cfg n
+  | isSymOcc (rdrNameOcc n) = cPre cfg ++ "_op" ++ intercalate "_" (map (show . ord) (key n))
+  | otherwise = key n
 
 gen :: Cfg -> String -> RdrName
 gen cfg s = mkRdrUnqual (mkVarOcc (cPre cfg ++ s))
@@ -125,6 +216,7 @@ gen cfg s = mkRdrUnqual (mkVarOcc (cPre cfg ++ s))
 lookupTraced :: Env -> RdrName -> Maybe RdrName
 lookupTraced env n
   | isUnqual n = Map.lookup (key n) (eScope env)
+  | Qual md o <- n = Map.lookup (moduleNameString md ++ "." ++ occNameString o) (cLibQual (eCfg env))
   | otherwise = Nothing
 
 -- | Remove the names bound by some patterns from the scope. A record
@@ -222,7 +314,41 @@ rwTopDecl :: Env -> Set String -> LHsDecl GhcPs -> RW [LHsDecl GhcPs]
 rwTopDecl env tr (L l d) = case d of
   ValD x b -> map (\(L l' b') -> L (if isGoodSrcSpan (locA l') then l' else l) (ValD x b')) <$> rwBind env True (L l b)
   SigD x s -> pure [L l (SigD x s') | s' <- splitSig (eCfg env) tr s]
+  InstD x (ClsInstD x' cid) -> do
+    binds <- mapM (rwMethod env) (bagToList (cid_binds cid))
+    pure [L l (InstD x (ClsInstD x' cid {cid_binds = listToBag binds}))]
+  TyClD x cd@ClassDecl {tcdMeths = meths} -> do
+    binds <- mapM (rwMethod env) (bagToList meths)
+    pure [L l (TyClD x cd {tcdMeths = listToBag binds})]
   _ -> pure [L l d]
+
+-- | An instance method or class default method with arguments:
+-- @m a1 … an = callDyn fid [val a1, …] (\c -> case (a1, …, an) of <equations>)@,
+-- each equation an alternative (guards fall through to the next one, as
+-- between equations). Methods without arguments are left alone.
+rwMethod :: Env -> LHsBind GhcPs -> RW (LHsBind GhcPs)
+rwMethod env (L l b) = case b of
+  FunBind {fun_id = n, fun_matches = MG mx (L la ms@(L _ Match {m_pats = pats1@(_ : _)} : _))} -> do
+    fid <- newFid (FunMeta (key (unLoc n)) "method" (toSpan (eCfg env) (locA l)))
+    let cfg = eCfg env
+        arity = length pats1
+        args = [gen cfg ("_a" ++ show i) | i <- [1 .. arity]]
+        c = gen cfg "_c"
+        scrut = case args of
+          [a] -> var a
+          _ -> mkLHsVarTuple args noAnn
+        alt (L lm mt) = do
+          g <- traceGRHSs env fid c (L lm mt)
+          let pat = case m_pats mt of
+                [p] -> p
+                ps -> nlTuplePat ps Boxed
+          pure (L lm mt {m_ctxt = CaseAlt, m_pats = [pat], m_grhss = g})
+    alts <- mapM alt ms
+    let body = noLocA (HsCase noAnn scrut (MG mx (L la alts)))
+        rhs = apps (var (rt "callDyn")) [intE fid, valList args, par (lam [c] body)]
+        match = Match noAnn (FunRhs n Prefix NoSrcStrict) (map nlVarPat args) (simpleGRHSs rhs)
+    pure (L l b {fun_matches = MG mx (L la [noLocA match])})
+  _ -> pure (L l b)
 
 -- | Rewrite one binding; a traced function yields its three bindings.
 --
@@ -236,7 +362,7 @@ rwBind env top lb@(L l b) = case b of
     | Just n <- tracedName b -> traceFun env l n b
     | top && isMain (fun_id b) -> one <$> rwMatchesWith env WrapMain mg
     | [] <- matchPats mg -> one <$> rwMatchesWith env NoWrap mg
-    | otherwise -> pure [lb] -- user operator: Task 5
+    | otherwise -> pure [lb]
     where
       one mg' = [L l (FunBind (fun_ext b) (fun_id b) mg')]
   PatBind {pat_rhs = rhs} -> do
@@ -280,13 +406,18 @@ traceFun env l n b = do
     ]
 
 traceMatch :: Env -> Int -> RdrName -> RdrName -> LMatch GhcPs (LHsExpr GhcPs) -> RW (LMatch GhcPs (LHsExpr GhcPs))
-traceMatch env fid c u (L lm mt) = do
-  let env' = (shadowPats (m_pats mt) env) {eParent = Just c}
-      ctxt = case m_ctxt mt of
+traceMatch env fid c u lmt@(L lm mt) = do
+  let ctxt = case m_ctxt mt of
         FunRhs {} -> FunRhs (noLocA u) Prefix NoSrcStrict
         other -> other
-  g <- rwGRHSs env' (WrapEq fid c (realSpan (locA lm))) (m_grhss mt)
+  g <- traceGRHSs env fid c lmt
   pure (L lm mt {m_ctxt = ctxt, m_pats = nlVarPat c : map (parenthesizePat appPrec) (m_pats mt), m_grhss = g})
+
+-- | The right-hand sides of a traced equation: its patterns in scope, the
+-- call id in @c@, each body wrapped with @eq@.
+traceGRHSs :: Env -> Int -> RdrName -> LMatch GhcPs (LHsExpr GhcPs) -> RW (GRHSs GhcPs (LHsExpr GhcPs))
+traceGRHSs env fid c (L lm mt) =
+  rwGRHSs ((shadowPats (m_pats mt) env) {eParent = Just c}) (WrapEq fid c (realSpan (locA lm))) (m_grhss mt)
 
 simpleFun :: RdrName -> [RdrName] -> LHsExpr GhcPs -> HsBind GhcPs
 simpleFun n params rhs =

@@ -20,10 +20,12 @@ import GHC.IO.Encoding (setLocaleEncoding, utf8)
 import System.IO (hPutStrLn, hSetEncoding, stderr)
 import System.Process (readProcess)
 import Data.Set (Set)
+import qualified Data.Set as Set
+import Data.Data (Data, cast, gmapQ)
 
-import Unfold.Fixity (Assoc (..), Fix, moduleFixities, resolveFixities)
+import Unfold.Fixity (Assoc (..), Fix, moduleFixities, rdrKey, resolveFixities)
 import Unfold.Meta (renderMeta)
-import Unfold.Rewrite (instrumentModule)
+import Unfold.Rewrite (Opts (..), instrumentModule, libTable)
 
 main :: IO ()
 main = do
@@ -33,23 +35,27 @@ main = do
   args <- getArgs
   case args of
     ["--roundtrip", input, output] -> roundtrip input output
-    [input, output, meta] -> instrumentFile input output meta
+    [input, output, meta] -> instrumentFile True input output meta
+    ["--no-lib", input, output, meta] -> instrumentFile False input output meta
     _ -> do
-      hPutStrLn stderr "usage: unfold-instrument [--roundtrip] IN.hs OUT.hs [META.json]"
+      hPutStrLn stderr "usage: unfold-instrument [--roundtrip] IN.hs OUT.hs [META.json]\n       unfold-instrument [--no-lib] IN.hs OUT.hs META.json"
       exitWith (ExitFailure 64)
 
 -- | Parse, resolve operator fixities, pretty-print.
 roundtrip :: FilePath -> FilePath -> IO ()
 roundtrip input output = do
-  code <- withResolved input $ \df _ _ lmod _ -> pure (showPpr df lmod)
+  code <- withResolved input $ \df _ _ lmod _ _ -> pure (showPpr df lmod)
   writeFile output (code ++ "\n")
 
--- | Instrument the user's functions; write the program and its META.
+-- | Instrument the user's functions (and the library functions unless
+-- @lib@ is False: @--no-lib@); write the program and its META.
 -- Exit codes: 2 parse error, 3 no @main@.
-instrumentFile :: FilePath -> FilePath -> FilePath -> IO ()
-instrumentFile input output metaOut = do
-  r <- withResolved input $ \df src opts lmod resolved ->
-    pure $ case instrumentModule (xopt LangExt.MonoLocalBinds df) resolved src (unLoc lmod) of
+instrumentFile :: Bool -> FilePath -> FilePath -> FilePath -> IO ()
+instrumentFile lib input output metaOut = do
+  r <- withResolved input $ \df src opts lmod resolved canLookup -> do
+    libs <- if lib && canLookup then preludeNames (unLoc lmod) else pure Set.empty
+    let o = Opts {oMonoLocal = xopt LangExt.MonoLocalBinds df, oLib = libs}
+    pure $ case instrumentModule o resolved src (unLoc lmod) of
       Left err -> Left err
       Right (m', meta) -> Right (pragmas opts ++ showPpr df (m' <$ lmod) ++ "\n", renderMeta meta)
   case r of
@@ -67,10 +73,11 @@ pragmas = concatMap one
       | otherwise = "{-# OPTIONS_GHC " ++ f ++ " #-}\n"
 
 -- | Parse the file (exit 2 on a parse error), resolve operator fixities and
--- hand over: flags, source, file pragmas, resolved module, resolved operators.
+-- hand over: flags, source, file pragmas, resolved module, resolved operators,
+-- whether the imports are in the interactive scope.
 withResolved
   :: FilePath
-  -> (DynFlags -> String -> [String] -> Located (HsModule GhcPs) -> Set RealSrcSpan -> Ghc a)
+  -> (DynFlags -> String -> [String] -> Located (HsModule GhcPs) -> Set RealSrcSpan -> Bool -> Ghc a)
   -> IO a
 withResolved input k = do
   libdir <- getLibdir
@@ -88,7 +95,7 @@ withResolved input k = do
         canLookup <- importContext df m
         env <- moduleFixities (if canLookup then lookupFixity else const (pure Nothing)) m
         let (m', resolved) = resolveFixities env m
-        Right <$> k df src (map unLoc opts) (m' <$ lmod) resolved
+        Right <$> k df src (map unLoc opts) (m' <$ lmod) resolved canLookup
   case result of
     Left err -> hPutStrLn stderr err >> exitWith (ExitFailure 2)
     Right a -> pure a
@@ -103,6 +110,22 @@ importContext df m = handleSourceError (const (setContext [] >> pure False)) $ d
       prelude = [simpleImportDecl (mkModuleName "Prelude") | xopt LangExt.ImplicitPrelude df, not explicitPrelude]
   setContext (map IIDecl (prelude ++ imports))
   pure True
+
+-- | The library names used in the module (@map@, @L.map@, @++@…) that GHC
+-- resolves, in the interactive scope (the module's imports), to exactly the
+-- function that the Prelude exports under that name.
+preludeNames :: HsModule GhcPs -> Ghc (Set String)
+preludeNames m = do
+  let used = nub [n | n <- collectRdr m, occNameString (rdrNameOcc n) `elem` [l | (l, _, _) <- libTable]]
+  scope <- getContext
+  setContext [IIDecl (simpleImportDecl (mkModuleName "Prelude"))]
+  refs <- mapM (\o -> (,) (occNameString o) <$> resolve (Unqual o)) (nub (map rdrNameOcc used))
+  setContext scope
+  ok <- mapM (\n -> (,) n <$> resolve n) used
+  pure $ Set.fromList
+    [rdrKey n | (n, [x]) <- ok, lookup (occNameString (rdrNameOcc n)) refs == Just [x]]
+  where
+    resolve n = handleSourceError (const (pure [])) (nub . foldr (:) [] <$> parseName (nameText n))
 
 -- | Fixity of an operator as GHC sees it in the interactive scope;
 -- Nothing if the name is not in scope (or ambiguous with differing fixities).
@@ -132,3 +155,6 @@ getLibdir = do
   case fromEnv of
     Just dir | not (null dir) -> pure dir
     _ -> takeWhile (`notElem` "\r\n") <$> readProcess "ghc" ["--print-libdir"] ""
+
+collectRdr :: Data a => a -> [RdrName]
+collectRdr x = maybe [] pure (cast x) ++ concat (gmapQ collectRdr x)

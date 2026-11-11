@@ -1,14 +1,17 @@
 import { rm } from 'node:fs/promises';
 import { describe, expect, test } from 'vitest';
-import { instrument, instrumentAndRun, runghcOriginal, type Meta } from './instrumentHelpers';
+import { instrument, instrumentAndCompile, instrumentAndRun, runghcOriginal, type Meta } from './instrumentHelpers';
 import type { RawCall, RawTrace } from './runtimeHelpers';
 
 const FIXTURES = ['fib.hs', 'qsort.hs', 'localgo.hs', 'nosig.hs', 'shadowing.hs', 'tree.hs', 'lambda.hs', 'features.hs', 'misc.hs',
-  'utf8.hs', 'wildcards.hs', 'columns.hs', 'puns.hs'];
+  'utf8.hs', 'wildcards.hs', 'columns.hs', 'puns.hs', 'operators.hs', 'scoping.hs',
+  'libuse.hs', 'libnames.hs', 'useroperator.hs', 'instance.hs', 'foldable.hs', 'libimports.hs'];
 
 const nameOf = (meta: Meta, c: RawCall) => meta.functions[c.fid].name;
 const callsNamed = (raw: RawTrace, meta: Meta, name: string) => raw.calls.filter(c => nameOf(meta, c) === name);
 const childrenOf = (raw: RawTrace, id: number) => raw.calls.filter(c => c.parent === id).sort((a, b) => a.id - b.id);
+/** The trace without the calls of library functions (negative fids). */
+const userOnly = (raw: RawTrace): RawTrace => ({ ...raw, calls: raw.calls.filter(c => c.fid > 0) });
 
 /** Names along the chain of only children starting at `c`. */
 function chain(raw: RawTrace, meta: Meta, c: RawCall): string[] {
@@ -56,8 +59,9 @@ test('fib 4', async () => {
 });
 
 test('qsort avec where : petits/grands ne sont pas des nœuds', async () => {
-  const { raw, meta } = await instrumentAndRun('qsort.hs');
-  expect(Object.values(meta.functions).map(f => f.name)).toEqual(['qsort']);
+  const { raw: all, meta } = await instrumentAndRun('qsort.hs');
+  const raw = userOnly(all);
+  expect(Object.values(meta.functions).filter(f => f.kind !== 'lib').map(f => f.name)).toEqual(['qsort']);
   expect(raw.calls).toHaveLength(17);
   expect(raw.calls.filter(c => c.parent === 0)).toHaveLength(1);
   const ids = new Set(raw.calls.map(c => c.id));
@@ -101,7 +105,8 @@ test('masquage : un paramètre nommé comme une fonction tracée', async () => {
 });
 
 test('data Arbre : insertion, valeurs affichées en con', async () => {
-  const { raw, meta } = await instrumentAndRun('tree.hs');
+  const { raw: all, meta } = await instrumentAndRun('tree.hs');
+  const raw = userOnly(all);
   expect(raw.calls).toHaveLength(8);
   const roots = raw.calls.filter(c => c.parent === 0);
   expect(roots).toHaveLength(4);
@@ -153,8 +158,8 @@ test('constructions variées : gardes, motifs, sections, infixes, paresse, class
   expect(source).toMatch(/1 `combine` 2 `combine` 3/);
   expect(count('combine')).toBe(3);
   expect(Object.values(meta.functions).filter(f => f.name === 'combine')).toHaveLength(2);
-  // user operators are not traced in this task
-  expect(Object.values(meta.functions).map(f => f.name)).not.toContain('|+|');
+  // user operators are traced: 2 calls in a resolved chain
+  expect(callsNamed(raw, meta, '|+|').map(c => [c.parent, c.dyn])).toEqual([[0, false], [0, false]]);
   expect(count('plus')).toBe(3);
   expect(count('fois')).toBe(2);
   expect(callsNamed(raw, meta, 'classer').map(c => meta.equations[c.eq!].rhsText))
@@ -205,6 +210,126 @@ test('colonnes en unités UTF-16 : tabulation et caractère hors BMP', async () 
   const [d] = callsNamed(raw, meta, 'double');
   // line 6: `\tputStrLn "😀" >> print (double 1)` — tab = 1 unit, emoji = 2 units
   expect(meta.sites[d.site].appSpan).toEqual({ line: 6, col: 26, endLine: 6, endCol: 34 });
+});
+
+test('bibliothèque : map, sum, elem, reverse, foldr tracés', async () => {
+  const { raw, meta, source } = await instrumentAndRun('libuse.hs');
+  expect(source).toMatch(/import qualified UnfoldPrelude/);
+  expect(source).not.toMatch(/import Prelude hiding/);
+  expect(meta.functions['-1']).toEqual({ name: 'map', kind: 'lib', defSpan: null });
+  expect(meta.functions['-8'].name).toBe('++');
+  // print (sum (map carre [1 .. 4])), line 11
+  const onLine = (c: RawCall, line: number) => c.site > 0 && meta.sites[c.site].appSpan?.line === line;
+  const [s] = callsNamed(raw, meta, 'sum').filter(c => c.parent === 0 && onLine(c, 11));
+  const [m] = callsNamed(raw, meta, 'map').filter(c => c.parent === 0 && onLine(c, 11));
+  expect(s).toBeDefined();
+  expect(m).toBeDefined();
+  expect(s.result).toEqual({ t: 'num', v: '30' });
+  expect(meta.sites[m.site].appSpan).toEqual({ line: 11, col: 15, endLine: 11, endCol: 33 });
+  // the map node's recursion: map → map → map → map → map ([] case)
+  expect(chain(raw, meta, m)).toEqual(['map', 'map', 'map', 'map', 'map']);
+  // carre is passed as a value from main: its lexical parent is main
+  const carres = callsNamed(raw, meta, 'carre').filter(c => onLine(c, 11));
+  expect(carres.map(c => c.parent)).toEqual([0, 0, 0, 0]);
+  expect(meta.sites[carres[0].site].appSpan).toEqual({ line: 11, col: 19, endLine: 11, endCol: 24 });
+  // 3 `elem` xs: an infix use in a resolved chain becomes a prefix call
+  expect(callsNamed(raw, meta, 'elem').filter(c => c.parent === 0 && onLine(c, 13))).toHaveLength(2);
+  expect(callsNamed(raw, meta, 'reverse').filter(c => c.parent === 0)).toHaveLength(1);
+  expect(callsNamed(raw, meta, 'foldr').filter(c => c.parent === 0).length).toBeGreaterThanOrEqual(3);
+  // laziness: only 3 elements of the infinite map are computed
+  expect(callsNamed(raw, meta, 'carre').filter(c => onLine(c, 17))).toHaveLength(3);
+  // sections of ++ and qualified names
+  expect(callsNamed(raw, meta, '++').filter(c => c.parent === 0 && onLine(c, 28))).toHaveLength(4);
+  expect(callsNamed(raw, meta, 'map').filter(c => c.parent === 0 && onLine(c, 30))).toHaveLength(1);
+  expect(callsNamed(raw, meta, 'length').filter(c => c.parent === 0 && onLine(c, 30))).toHaveLength(1);
+});
+
+test('bibliothèque : champs, paramètres et valeurs locales du même nom ne sont pas réécrits', async () => {
+  const { raw, meta } = await instrumentAndRun('libnames.hs');
+  const names = new Set(raw.calls.map(c => nameOf(meta, c)));
+  for (const n of ['sum', 'filter', 'reverse', 'take']) expect(names.has(n)).toBe(false);
+  expect(callsNamed(raw, meta, 'foldr').length).toBeGreaterThan(0);
+  // `where take = length ys * 2`: a real use of the Prelude's length
+  expect(callsNamed(raw, meta, 'length')).toHaveLength(4);
+  expect(callsNamed(raw, meta, 'map').length).toBeGreaterThan(0);
+});
+
+test('bibliothèque : seuls les noms que GHC résout vers le Prelude sont réécrits', async () => {
+  const { raw, meta, source } = await instrumentAndRun('libimports.hs');
+  // Data.Map's filter and Data.Set's map stay; P.filter and P.map are the Prelude's
+  expect(source).toMatch(/toList \(filter even/);
+  expect(source).toMatch(/S\.map/);
+  expect(callsNamed(raw, meta, 'filter').filter(c => c.parent === 0)).toHaveLength(1);
+  expect(callsNamed(raw, meta, 'map').filter(c => c.parent === 0)).toHaveLength(1);
+  // GADT instance method and operator with guards falling through
+  expect(callsNamed(raw, meta, 'eval').every(c => meta.functions[c.fid].kind === 'method')).toBe(true);
+  expect(callsNamed(raw, meta, 'eval')).toHaveLength(4);
+  expect(callsNamed(raw, meta, '?').map(c => meta.equations[c.eq!].eqText)).toEqual(['a ? b | a > b = a', 'x ? _ = x * 100']);
+});
+
+test('instance Foldable : les fonctions Foldable restent celles du Prelude', async () => {
+  const { raw, meta } = await instrumentAndRun('foldable.hs');
+  const names = new Set(raw.calls.map(c => nameOf(meta, c)));
+  for (const n of ['sum', 'length', 'elem']) expect(names.has(n)).toBe(false);
+  expect(callsNamed(raw, meta, 'map').length).toBeGreaterThan(0);
+  expect(callsNamed(raw, meta, 'foldr').every(c => meta.functions[c.fid].kind === 'method')).toBe(true);
+});
+
+test('--no-lib : length sur un Data.Map compile seulement sans la bibliothèque tracée', async () => {
+  const withLib = await instrumentAndCompile('maplength.hs');
+  try {
+    expect(withLib.ghc.code).not.toBe(0);
+  } finally {
+    await rm(withLib.dir, { recursive: true, force: true });
+  }
+  const { stdout, raw, meta, source } = await instrumentAndRun('maplength.hs', undefined, ['--no-lib']);
+  expect(stdout).toBe(await runghcOriginal('maplength.hs'));
+  expect(source).not.toMatch(/UnfoldPrelude/);
+  expect(callsNamed(raw, meta, 'double')).toHaveLength(2);
+  expect(raw.calls.every(c => c.fid > 0)).toBe(true);
+});
+
+test('--no-lib : opérateurs et instances toujours tracés', async () => {
+  const { stdout, raw, meta } = await instrumentAndRun('useroperator.hs', undefined, ['--no-lib']);
+  expect(stdout).toBe(await runghcOriginal('useroperator.hs'));
+  expect(callsNamed(raw, meta, '<+>').length).toBe(9);
+  expect(raw.calls.every(c => c.fid > 0)).toBe(true);
+});
+
+test('opérateur utilisateur : nœud qui porte son nom', async () => {
+  const { raw, meta } = await instrumentAndRun('useroperator.hs');
+  const ops = Object.values(meta.functions).filter(f => f.kind === 'user').map(f => f.name);
+  expect(ops).toEqual(['<+>', '|>']);
+  const plus = callsNamed(raw, meta, '<+>');
+  // chain (2) + sections (3) + prefix (1) + foldr (3)
+  expect(plus).toHaveLength(9);
+  // `1 <+> 2 <+> 3`: two calls with main as lexical parent
+  const chained = plus.filter(c => meta.sites[c.site]?.appSpan?.line === 13);
+  expect(chained.map(c => [c.parent, c.dyn])).toEqual([[0, false], [0, false]]);
+  expect(meta.equations[chained[0].eq!].eqText).toBe('a <+> b = a * 10 + b');
+  // `(|>) xs x = xs ++ [x]`: the ++ inside is a child of the operator's call
+  const pipes = callsNamed(raw, meta, '|>');
+  expect(pipes).toHaveLength(2);
+  for (const p of pipes) expect(childrenOf(raw, p.id).map(k => nameOf(meta, k))).toContain('++');
+});
+
+test('méthodes d’instance : nœuds de genre method', async () => {
+  const { raw, meta } = await instrumentAndRun('instance.hs');
+  const kindOf = (n: string) => Object.values(meta.functions).filter(f => f.name === n).map(f => f.kind);
+  expect(kindOf('show')).toEqual(['method']); // `show = const "N"` has no argument: not a node
+  expect(kindOf('taille')).toEqual(['method']);
+  expect(kindOf('decrire')).toEqual(['method']);
+  expect(kindOf('==')).toEqual(['method']);
+  const shows = callsNamed(raw, meta, 'show');
+  expect(shows).toHaveLength(5); // 2 Noeud + 3 Feuille
+  expect(shows.every(c => c.dyn)).toBe(true);
+  // calls in a method's body have the method call as lexical parent
+  const top = shows.find(c => c.args[0].t === 'con' && c.args[0].name === 'Noeud' && c.parent === 0)
+    ?? shows.find(c => c.args[0].t === 'con' && c.args[0].name === 'Noeud')!;
+  expect(childrenOf(raw, top.id).filter(k => !k.dyn).map(k => nameOf(meta, k))).toContain('++');
+  expect(callsNamed(raw, meta, 'taille')).toHaveLength(5);
+  expect(callsNamed(raw, meta, '==')).toHaveLength(2);
+  expect(meta.equations[callsNamed(raw, meta, '==')[0].eq!].eqText).toBe('V a b == V c d = a == c && b == d');
 });
 
 test('programme sans main : sortie 3 et message', async () => {
