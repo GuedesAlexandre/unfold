@@ -1,0 +1,65 @@
+:root {
+  color-scheme: light dark;
+  --bg: #f7f7f5; --fg: #1c1c1e; --muted: #5b6068; --panel: #ffffff; --border: #d4d4d0;
+  --wait-bg: #fde68a; --wait-fg: #1c1c1e; --wait-stroke: #b58900;
+  --done-bg: #bbf7d0; --done-fg: #14301f; --done-stroke: #2f855a;
+  --idle-bg: #e5e7eb; --idle-fg: #4b5563; --idle-stroke: #b6bac2;
+  --fail-bg: #dc2626; --fail-fg: #ffffff; --fail-stroke: #7f1d1d;
+  --failrel-bg: #fee2e2; --failrel-fg: #3b0d0d; --failrel-stroke: #dc2626;
+  --current: #1d4ed8;
+  --cell-bg: #ffffff; --cell-fg: #1c1c1e; --cell-stroke: #8a8f98;
+  --todo-bg: #d1d5db; --todo-fg: #4b5563;
+  --edge: #8a8f98;
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17181a; --fg: #ececec; --muted: #a0a4ab; --panel: #1f2023; --border: #3a3c40;
+    --wait-bg: #7a5c00; --wait-fg: #fff8dc; --wait-stroke: #e0b43a;
+    --done-bg: #14532d; --done-fg: #e3fbe9; --done-stroke: #4ade80;
+    --idle-bg: #2a2c30; --idle-fg: #9aa0a8; --idle-stroke: #44474d;
+    --fail-bg: #b91c1c; --fail-fg: #ffffff; --fail-stroke: #fecaca;
+    --failrel-bg: #4a1414; --failrel-fg: #ffe4e4; --failrel-stroke: #f87171;
+    --current: #93c5fd;
+    --cell-bg: #26282c; --cell-fg: #ececec; --cell-stroke: #6b7078;
+    --todo-bg: #3a3d42; --todo-fg: #b0b5bc;
+    --edge: #6b7078;
+  }
+}
+html, body, #root { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--fg); }
+
+.call-tree { width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; user-select: none; background: var(--bg); }
+.call-tree.dragging { cursor: grabbing; }
+.call-tree .world { transform-origin: 0 0; }
+.call-tree.smooth:not(.dragging) .world { transition: transform .25s ease; }
+
+.edge { stroke: var(--edge); stroke-width: 1.5; fill: none; }
+.node { cursor: pointer; font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+.node rect.box { stroke-width: 1.5; }
+.node .v-text { fill: var(--node-fg); }
+.node .v-ctext { fill: var(--cell-fg); }
+.node .v-muted { fill: var(--todo-fg); font-style: italic; }
+.node.s-wait { --node-fg: var(--wait-fg); }
+.node.s-wait rect.box { fill: var(--wait-bg); stroke: var(--wait-stroke); }
+.node.s-done { --node-fg: var(--done-fg); }
+.node.s-done rect.box { fill: var(--done-bg); stroke: var(--done-stroke); }
+.node.s-idle { --node-fg: var(--idle-fg); }
+.node.s-idle rect.box { fill: var(--idle-bg); stroke: var(--idle-stroke); stroke-dasharray: 5 3; }
+.node.s-fail { --node-fg: var(--fail-fg); }
+.node.s-fail rect.box { fill: var(--fail-bg); stroke: var(--fail-stroke); }
+.node.s-failrel { --node-fg: var(--failrel-fg); }
+.node.s-failrel rect.box { fill: var(--failrel-bg); stroke: var(--failrel-stroke); stroke-width: 2.5; }
+.node.current rect.box { stroke-width: 3; }
+.node.current.s-failrel rect.box { stroke-width: 3.5; }
+.node rect.ring { fill: none; stroke: var(--current); stroke-width: 3; }
+.node .fail-badge circle { fill: var(--fail-bg); stroke: var(--fail-stroke); stroke-width: 1.5; }
+.node .fail-badge text { fill: var(--fail-fg); font-weight: bold; }
+.node .toggle rect { fill: var(--cell-bg); stroke: var(--cell-stroke); }
+.node .toggle text { fill: var(--cell-fg); }
+
+.v-text { fill: var(--fg); font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; }
+.v-cell { fill: var(--cell-bg); stroke: var(--cell-stroke); stroke-width: 1; }
+.v-todo { fill: var(--todo-bg); stroke: none; }
+.v-dot { fill: var(--cell-stroke); }
+.v-line { stroke: var(--cell-stroke); stroke-width: 1; }
