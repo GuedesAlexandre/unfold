@@ -19,6 +19,11 @@ Puis ouvrir l'URL affichée par Vite (en général http://localhost:5173). Le se
 
 Tests : `npm test`.
 
+## Déploiement
+
+- Front : Vercel (`vercel.json` à la racine), qui redirige `/api/*` vers le backend.
+- Backend : Space Docker Hugging Face (`Dockerfile`), synchronisé par `.github/workflows/deploy-backend.yml` à chaque push sur `main`.
+
 ## Limites connues
 
 - Environ 5 000 étapes et 10 s par exécution au maximum.

@@ -4,8 +4,8 @@ import type { Trace } from '@unfold/shared/trace';
 import { haskellTracer, instrumenterBin } from './languages/haskell';
 import type { Tracer } from './languages/types';
 
-const PORT = 5174;
-const HOST = '127.0.0.1';
+const PORT = Number(process.env.PORT ?? 5174);
+const HOST = process.env.HOST ?? '127.0.0.1';
 const MAX_BODY = 1_000_000;
 
 const tracers: Partial<Record<Trace['language'], Tracer>> = { haskell: haskellTracer };
@@ -42,6 +42,7 @@ function readBody(req: http.IncomingMessage): Promise<string | null> {
 export function createServer(): http.Server {
   return http.createServer(async (req, res) => {
     try {
+      if (req.method === 'GET' && (req.url === '/' || req.url === '/api/health')) return send(res, 200, { ok: true });
       if (req.method !== 'POST' || req.url !== '/api/run') return send(res, 404, { error: 'Introuvable' });
       const text = await readBody(req);
       if (text === null) return send(res, 413, { error: 'Programme trop long' });
