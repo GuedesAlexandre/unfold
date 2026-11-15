@@ -5,6 +5,6 @@
   "buildCommand": "npm run build -w web",
   "outputDirectory": "web/dist",
   "rewrites": [
-    { "source": "/api/:path*", "destination": "https://HF_USER-unfold.hf.space/api/:path*" }
+    { "source": "/api/:path*", "destination": "https://unfold-api.onrender.com/api/:path*" }
   ]
 }

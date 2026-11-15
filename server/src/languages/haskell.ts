@@ -8,7 +8,10 @@ import type { Tracer } from './types';
 
 const tracerDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../tracer-haskell');
 
-const GHC_FLAGS = ['-O0', '-package', 'ghc-heap', '-fno-omit-yields', '-rtsopts', '-with-rtsopts=-M512m'];
+/** Heap limits, lowered on small hosts: the traced program's (`UNFOLD_PROG_HEAP`) and GHC's own (`UNFOLD_GHC_HEAP`). */
+const PROG_HEAP = process.env.UNFOLD_PROG_HEAP ?? '512m';
+const GHC_RTS = process.env.UNFOLD_GHC_HEAP ? ['+RTS', `-M${process.env.UNFOLD_GHC_HEAP}`, '-RTS'] : [];
+const GHC_FLAGS = ['-O0', '-package', 'ghc-heap', '-fno-omit-yields', '-rtsopts', `-with-rtsopts=-M${PROG_HEAP}`];
 const TOOL_LIMITS = { timeoutMs: 120_000, maxOutput: 1_000_000 };
 const MAX_STEPS = 5000;
 const TIMEOUT_MS = 10_000;
@@ -155,7 +158,7 @@ async function pipeline(code: string, dir: string): Promise<Trace> {
   await writeFile(path.join(dir, 'Main.hs'), code);
 
   // 2. Type-check the original, with its own pragmas.
-  const check = await run('ghc', ['-fno-code', '-fdiagnostics-as-json', 'Main.hs'], tool);
+  const check = await run('ghc', [...GHC_RTS, '-fno-code', '-fdiagnostics-as-json', 'Main.hs'], tool);
   const { diagnostics, noMain } = parseDiagnostics(check.stderr, code);
   if (check.code !== 0) {
     if (check.timedOut) return trace('internal-error', { message: 'GHC ne répond pas', diagnostics });
@@ -177,7 +180,7 @@ async function pipeline(code: string, dir: string): Promise<Trace> {
 
   // 4. Compile with the runtime; if the traced library doesn't fit the program, retry without it.
   for (const f of ['UnfoldRuntime.hs', 'UnfoldPrelude.hs']) await copyFile(path.join(tracerDir, 'runtime', f), path.join(dir, f));
-  const compile = () => run('ghc', [...GHC_FLAGS, '-outputdir', path.join(dir, 'build'), '-o', path.join(dir, 'prog'), 'Instr.hs'], tool);
+  const compile = () => run('ghc', [...GHC_RTS, ...GHC_FLAGS, '-outputdir', path.join(dir, 'build'), '-o', path.join(dir, 'prog'), 'Instr.hs'], tool);
   const messages: string[] = [];
   let ghc = await compile();
   if (ghc.code !== 0) {

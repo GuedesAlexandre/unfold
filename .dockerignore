@@ -1,0 +1,8 @@
+**/node_modules
+**/dist
+**/dist-newstyle
+.git
+docs
+server/test
+web/src
+web/test

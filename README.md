@@ -22,7 +22,7 @@ Tests : `npm test`.
 ## Déploiement
 
 - Front : Vercel (`vercel.json` à la racine), qui redirige `/api/*` vers le backend.
-- Backend : Space Docker Hugging Face (`Dockerfile`), synchronisé par `.github/workflows/deploy-backend.yml` à chaque push sur `main`.
+- Backend : service web Docker gratuit sur Render (`render.yaml`, `Dockerfile`), redéployé à chaque push sur `main`.
 
 ## Limites connues
 

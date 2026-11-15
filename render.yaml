@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: unfold-api
+    runtime: docker
+    plan: free
+    region: frankfurt
+    branch: main
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    autoDeploy: true
+    buildFilter:
+      paths:
+        - server/src/**
+        - shared/**
+        - tracer-haskell/**
+        - Dockerfile
+        - package-lock.json
+        - render.yaml
